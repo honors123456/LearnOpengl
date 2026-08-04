@@ -1835,6 +1835,8 @@ $$\text{最终颜色} = \text{环境光 (Ambient)} + \text{漫反射 (Diffuse)} 
 
 #### 1.三大成分的物理本质与数学推导
 
+这三个项描述的是**光对物体颜色的影响**，而不是物体自身的颜色，最后观察到颜色是还要将这个影响因子x物体表面颜色。
+
 ```
 环境光 (Ambient)               漫反射 (Diffuse)               高光 (Specular)
       (无方向，全局基础亮度)          (取决于入射角 θ)             (取决于反射光与观察者夹角 ϕ)
@@ -1968,3 +1970,176 @@ N⋅T=0
 又因为 N⋅T=0；N^T^T = 0;
 
 所以A^T^M = I; A = (M^-1^)^T^
+
+
+
+#### 3.完整可运行代码实现
+
+##### 1. 顶点着色器 (`shader.vs`)
+
+法线向量和顶点坐标都必须变换到 **世界空间（World Space）** 下计算，因为光源位置 `lightPos` 通常是用世界坐标给出的。
+
+```glsl
+#version 330 core
+layout (location = 0) in vec3 aPos;    // 顶点位置
+layout (location = 1) in vec3 aNormal; // 顶点法线
+
+out vec3 FragPos; // 传给片段着色器的：世界空间下的片段坐标
+out vec3 Normal;  // 传给片段着色器的：世界空间下的法线向量
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+uniform mat3 normalMatrix; // 逆转置法线矩阵
+
+void main()
+{
+    // 1. 将顶点位置转换到世界空间
+    FragPos = vec3(model * vec4(aPos, 1.0));
+    
+    // 2. 用专门的法线矩阵变换法线，防止非等比例缩放破坏垂直性
+    Normal = normalMatrix * aNormal;
+    
+    // 3. 输出 NDC 裁剪坐标
+    gl_Position = projection * view * vec4(FragPos, 1.0);
+}
+```
+
+##### 2. 片段着色器 (`shader.fs`)—— Phong 光照核心逻辑
+
+所有光照计算都在片段着色器中按像素（Per-pixel Light / Phong Shading）逐点计算。
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+
+in vec3 FragPos; // 世界空间下的片段位置
+in vec3 Normal;  // 世界空间下的法线
+
+// 物体材质属性与光源属性
+uniform vec3 objectColor; // 物体本身的颜色 (例如 珊瑚红 vec3(1.0, 0.5, 0.31))
+uniform vec3 lightColor;  // 光源颜色 (例如 纯白光 vec3(1.0, 1.0, 1.0))
+uniform vec3 lightPos;    // 光源的世界空间坐标
+uniform vec3 viewPos;     // 摄像机/眼睛的世界空间坐标 (camera.Position)
+
+void main()
+{
+    //使用的工具
+    vec3 norm = normalize(Normal);
+    vec3 lightDir = normalize(lightPos - FragPos); // 从片段指向光源
+    vec3 viewDir = normalize(viewPos - FragPos);   // 从片段指向相机
+    
+    //前面讲到物体的最终颜色 = 环境光 + 漫反射 + 高光
+    //所以来计算三大成分
+    
+    // 1. 环境光 (Ambient)
+    //任意定义一个强度因子
+    float ambientStrength = 0.1;
+    vec3 ambient = ambientStrength * lightColor;
+    
+    // 2. 漫反射 (Diffuse) - Lambert 余弦定律
+    //光打到物体表面的反射角度，法线 * lightDir
+    float diff = max(dot(norm, lightDir), 0.0); // 防止负数
+    vec3 diffuse = diff * lightColor;
+    
+    // 3. 高光 (Specular) - Phong 镜面反射
+    float specularStrength = 0.5; // 高光强度，物体材质参数，表示这个物体有多强的镜面反射能力。
+    vec3 reflectDir = reflect(-lightDir, norm); //光线经过物体表面的反射光向量
+    //spec,角度，观察方向是否对准反射光。
+    //max(dot(viewDir, reflectDir), 0.0),观察者是不是正好在反射光方向上？
+    //pow,这是控制高光大小。
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32); 
+    vec3 specular = specularStrength * spec * lightColor;
+    
+    // ------------------------------------------------------------------
+    // 4. 叠加三大成分，乘上物体颜色
+    // ------------------------------------------------------------------
+    vec3 result = (ambient + diffuse + specular) * objectColor;
+    FragColor = vec4(result, 1.0);
+}
+```
+
+
+
+3. C++ 渲染主循环（Application Side）
+
+```glsl
+// 渲染主循环 (Render Loop)
+while (!glfwWindowShouldClose(window))
+{
+    // 1. 清屏
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // 2. 激活光照 Shader
+    lightingShader.use();
+    
+    // 3. 传参：光源与物体的颜色/位置
+    lightingShader.setVec3("objectColor", 1.0f, 0.5f, 0.31f); // 珊瑚红
+    lightingShader.setVec3("lightColor",  1.0f, 1.0f, 1.0f);  // 白光
+    lightingShader.setVec3("lightPos",    lightPos);           // 如 glm::vec3(1.2f, 1.0f, 2.0f)
+    lightingShader.setVec3("viewPos",     camera.Position);    // 相机当前位置
+
+    // 4. 坐标矩阵计算 (MVP)
+    glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
+    glm::mat4 view       = camera.GetViewMatrix();
+    glm::mat4 model      = glm::mat4(1.0f);
+    
+    // 假设对物体施加了缩放和平移
+    model = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
+    model = glm::scale(model, glm::vec3(1.0f, 2.0f, 1.0f)); // 非等比例缩放！
+
+    // 关键步骤：计算法线矩阵（Model 逆矩阵的转置）
+    glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(model)));
+
+    // 5. 设置 Matrix Uniforms
+    lightingShader.setMat4("projection", projection);
+    lightingShader.setMat4("view", view);
+    lightingShader.setMat4("model", model);
+    lightingShader.setMat3("normalMatrix", normalMatrix); // 传入 3x3 法线矩阵
+
+    // 6. 绘制网格 (比如画一个立方体)
+    glBindVertexArray(cubeVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    // 7. 交换缓冲区与监听事件
+    glfwSwapBuffers(window);
+    glfwPollEvents();
+}
+```
+
+
+
+##### 4.Phong 与 Blinn-Phong 的演进关系
+
+如果你运行上面的代码，并把视角转到高光区域边缘，你可能会注意到一个**瑕疵**：
+
+当高光夹角 $\phi > 90^\circ$ 时，$\mathbf{\vec{V}} \cdot \mathbf{\vec{R}}$ 会瞬间截断为 0，导致高光边缘有一条非常不自然的**断层切线**。
+
+为了解决这个问题，吉姆·布林（Jim Blinn）对 Phong 模型做了一改进，诞生了 **Blinn-Phong 光照模型**（现代渲染引擎更常用）：
+
+```
+Phong 模型                          Blinn-Phong 模型
+    计算 View 与 Reflect 的夹角              计算 Normal 与 Halfway 的夹角
+          \  N  / R 反射光                         \  N  /
+           \ │ /                                    \ │ /   H 半角向量
+            \│/    ↙ V                               \│/ ↗  (N 与 H 夹角永远 ≤ 90°)
+          ───┴───  👁                                ───┴─── 👁
+```
+
+1. 不去计算复杂的反射向量 $\mathbf{\vec{R}}$，而是计算**半角向量（Halfway Vector）$\mathbf{\vec{H}}$**：
+
+   $$\mathbf{\vec{H}} = \text{normalize}(\mathbf{\vec{L}} + \mathbf{\vec{V}})$$
+
+2. 高光改为计算法线 $\mathbf{\vec{N}}$ 与半角向量 $\mathbf{\vec{H}}$ 的点积：
+
+   $$\text{Specular} = (\max(\mathbf{\vec{N}} \cdot \mathbf{\vec{H}}, 0.0))^{p_{blinn}}$$
+
+在代码中只需将片段着色器的高光计算改写为一行：
+
+```glsl
+// Blinn-Phong 高光计算 (性能更好，表现更平滑)
+vec3 halfwayDir = normalize(lightDir + viewDir);
+float spec = pow(max(dot(norm, halfwayDir), 0.0), 64); // Blinn-Phong 指数通常取 Phong 的 2~4 倍
+```
+
