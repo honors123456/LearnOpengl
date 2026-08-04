@@ -1,0 +1,9 @@
+# 可执行文件
+*.exe
+
+# 动态库
+*.dll
+*.pdb
+
+# CMake构建目录
+build/
