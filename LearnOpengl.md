@@ -1,3 +1,7 @@
+
+
+
+
 # LearnOpengl
 
 
@@ -1542,7 +1546,7 @@ while (!glfwWindowShouldClose(window)) {
 
 
 
-## 第六章：**摄像机（Camera）与动态视角**
+## 第七章：**摄像机（Camera）与动态视角**
 
 之前我们画出了 3D 盒子并用矩阵将它投射到了屏幕上。但那时相机是固定不动的。**第7章的核心任务，就是给渲染引擎加上摄像机控制系统，让你能像玩 FPS 第一人称射击游戏（如 CS/Minecraft）一样，用鼠标和键盘自由穿梭在 3D 世界中。**
 
@@ -1977,33 +1981,53 @@ N⋅T=0
 
 ##### 1. 顶点着色器 (`shader.vs`)
 
+一般光照条件下需要两套shader，光源一套，物体一套。
+
 法线向量和顶点坐标都必须变换到 **世界空间（World Space）** 下计算，因为光源位置 `lightPos` 通常是用世界坐标给出的。
 
 ```glsl
 #version 330 core
-layout (location = 0) in vec3 aPos;    // 顶点位置
-layout (location = 1) in vec3 aNormal; // 顶点法线
+layout (location = 0) in vec3 aCoord;   //顶点
+layout (location = 1) in vec3 aNormal;  //法线
 
-out vec3 FragPos; // 传给片段着色器的：世界空间下的片段坐标
-out vec3 Normal;  // 传给片段着色器的：世界空间下的法线向量
 
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
-uniform mat3 normalMatrix; // 逆转置法线矩阵
+uniform mat3 normalMatrix;  //逆转置法线矩阵
+
+out vec3 normal;    //世界空间下的法线向量
+out vec3 fragPos;   //世界空间下的片段坐标
 
 void main()
 {
-    // 1. 将顶点位置转换到世界空间
-    FragPos = vec3(model * vec4(aPos, 1.0));
-    
-    // 2. 用专门的法线矩阵变换法线，防止非等比例缩放破坏垂直性
-    Normal = normalMatrix * aNormal;
-    
-    // 3. 输出 NDC 裁剪坐标
-    gl_Position = projection * view * vec4(FragPos, 1.0);
+    //局部空间转为世界空间
+    fragPos = vec3(model * vec4(aCoord,1.0));
+
+    //法线
+    normal = normalMatrix * aNormal;
+
+    //转换为裁剪空间坐标
+    gl_Position = projection * view * model * vec4(aCoord,1.0);
 }
 ```
+
+```glsl
+#点光源顶点着色器
+#version 330 core
+layout (location = 0) in vec3 aPos;
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+
+void main()
+{
+    gl_Position = projection * view * model * vec4(aPos,1.0);
+}
+```
+
+
 
 ##### 2. 片段着色器 (`shader.fs`)—— Phong 光照核心逻辑
 
@@ -2011,51 +2035,67 @@ void main()
 
 ```glsl
 #version 330 core
+
 out vec4 FragColor;
 
-in vec3 FragPos; // 世界空间下的片段位置
-in vec3 Normal;  // 世界空间下的法线
+in vec3 fragPos;
+in vec3 normal;
 
-// 物体材质属性与光源属性
-uniform vec3 objectColor; // 物体本身的颜色 (例如 珊瑚红 vec3(1.0, 0.5, 0.31))
-uniform vec3 lightColor;  // 光源颜色 (例如 纯白光 vec3(1.0, 1.0, 1.0))
-uniform vec3 lightPos;    // 光源的世界空间坐标
-uniform vec3 viewPos;     // 摄像机/眼睛的世界空间坐标 (camera.Position)
+//对象物体表面颜色
+uniform vec3 objectColor;
+
+//光源颜色
+uniform vec3 lightColor;
+
+//光源位置
+uniform vec3 lightPos;
+
+//摄像机位置
+uniform vec3 cameraPos;
 
 void main()
 {
-    //使用的工具
-    vec3 norm = normalize(Normal);
-    vec3 lightDir = normalize(lightPos - FragPos); // 从片段指向光源
-    vec3 viewDir = normalize(viewPos - FragPos);   // 从片段指向相机
-    
-    //前面讲到物体的最终颜色 = 环境光 + 漫反射 + 高光
-    //所以来计算三大成分
-    
-    // 1. 环境光 (Ambient)
-    //任意定义一个强度因子
+    //物体最终显示颜色 = 光源影响因子 * 物体表面颜色;
+    //光源影响因子 = 环境光 + 漫反射 + 高光
+
+    //方向向量
+    vec3 N = normalize(normal);
+    vec3 L = normalize(lightPos - fragPos); //入射光向量的反向量
+    vec3 R = reflect(-L,N);                 //反射光向量
+    vec3 V = normalize(cameraPos - fragPos);//相机方向向量的反向量
+    vec3 H = normalize(L+V);          //半角向量
+
+    //环境光
     float ambientStrength = 0.1;
     vec3 ambient = ambientStrength * lightColor;
-    
-    // 2. 漫反射 (Diffuse) - Lambert 余弦定律
-    //光打到物体表面的反射角度，法线 * lightDir
-    float diff = max(dot(norm, lightDir), 0.0); // 防止负数
+
+    //漫反射
+    float diff  = max(dot(N,L),0.0);  //入射光和法线夹角
     vec3 diffuse = diff * lightColor;
-    
-    // 3. 高光 (Specular) - Phong 镜面反射
-    float specularStrength = 0.5; // 高光强度，物体材质参数，表示这个物体有多强的镜面反射能力。
-    vec3 reflectDir = reflect(-lightDir, norm); //光线经过物体表面的反射光向量
-    //spec,角度，观察方向是否对准反射光。
-    //max(dot(viewDir, reflectDir), 0.0),观察者是不是正好在反射光方向上？
-    //pow,这是控制高光大小。
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32); 
+
+    //高光
+    float specularStrength = 0.5;
+    //float spec = pow(max(dot(V,R),0.0),32);  //反射光和相机夹角,使用pow进行光线集中收束
+    //Phong模型,反射光和相机夹角,在高光夹角大于90时，有断层切线，所以引入Blinn-Phong模型，使用半角向量和法线的夹角
+    float spec = pow(max(dot(N,H),0.0),64);
     vec3 specular = specularStrength * spec * lightColor;
-    
-    // ------------------------------------------------------------------
-    // 4. 叠加三大成分，乘上物体颜色
-    // ------------------------------------------------------------------
-    vec3 result = (ambient + diffuse + specular) * objectColor;
-    FragColor = vec4(result, 1.0);
+
+    //物体最终显示颜色
+    vec3 objColor = (ambient + diffuse + specular) * objectColor;
+
+    FragColor = vec4(objColor,1.0);
+}
+```
+
+
+
+```glsl
+#点光源片段着色器
+#version 330 core
+out vec4 FragColor;
+
+void main() {
+    FragColor = vec4(1.0); // 始终输出白光
 }
 ```
 
@@ -2065,44 +2105,61 @@ void main()
 
 ```glsl
 // 渲染主循环 (Render Loop)
-while (!glfwWindowShouldClose(window))
+while(!glfwWindowShouldClose(window))
 {
-    // 1. 清屏
+    float currentFrame = static_cast<float>(glfwGetTime());
+    deltaTime = currentFrame - lastFrame;
+    lastFrame = currentFrame;
+
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // 2. 激活光照 Shader
-    lightingShader.use();
-    
-    // 3. 传参：光源与物体的颜色/位置
-    lightingShader.setVec3("objectColor", 1.0f, 0.5f, 0.31f); // 珊瑚红
-    lightingShader.setVec3("lightColor",  1.0f, 1.0f, 1.0f);  // 白光
-    lightingShader.setVec3("lightPos",    lightPos);           // 如 glm::vec3(1.2f, 1.0f, 2.0f)
-    lightingShader.setVec3("viewPos",     camera.Position);    // 相机当前位置
+    processInput(window);
 
-    // 4. 坐标矩阵计算 (MVP)
-    glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
-    glm::mat4 view       = camera.GetViewMatrix();
-    glm::mat4 model      = glm::mat4(1.0f);
-    
-    // 假设对物体施加了缩放和平移
-    model = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
-    model = glm::scale(model, glm::vec3(1.0f, 2.0f, 1.0f)); // 非等比例缩放！
+    //两个物体都是同一个摄像机，同一个窗口进行观察，所以共用view和projection
+    glm::mat4 view = camera.GetViewMatrix();
+    float aspect = framebufferHeight > 0
+        ? static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight)
+        : 1.0f;
+    glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), aspect, 0.1f, 100.0f);
 
-    // 关键步骤：计算法线矩阵（Model 逆矩阵的转置）
+    //光源
+    lightShader.use();
+    glm::mat4 lightModel = glm::mat4(1.0f);
+    lightModel = glm::translate(lightModel, lightPos);
+    lightModel = glm::scale(lightModel, glm::vec3(0.2f));
+
+    lightShader.setMat4("model",lightModel);
+    lightShader.setMat4("view",view);
+    lightShader.setMat4("projection",projection);
+
+    //绘制光源正方体
+    glBindVertexArray(lightCubeVAO);
+    glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
+    glBindVertexArray(0);
+
+    //物体对象
+    objShader.use();
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::rotate(model, glm::radians(cubePitch), glm::vec3(1.0f, 0.0f, 0.0f));
+    model = glm::rotate(model, glm::radians(cubeYaw), glm::vec3(0.0f, 1.0f, 0.0f));
+    model = glm::scale(model, glm::vec3(1.0f, 1.0f, 1.0f));
+
     glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(model)));
+    objShader.setMat4("model",model);
+    objShader.setMat4("view",view);
+    objShader.setMat4("projection",projection);
+    objShader.setMat3("normalMatrix",normalMatrix);
+    objShader.setVec3("lightColor",lightColor);
+    objShader.setVec3("lightPos",lightPos);
+    objShader.setVec3("objectColor",objectColor);
+    objShader.setVec3("cameraPos",camera.Position);
 
-    // 5. 设置 Matrix Uniforms
-    lightingShader.setMat4("projection", projection);
-    lightingShader.setMat4("view", view);
-    lightingShader.setMat4("model", model);
-    lightingShader.setMat3("normalMatrix", normalMatrix); // 传入 3x3 法线矩阵
+    //绘制物体正方体
+    glBindVertexArray(VAO);
+    glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
+    glBindVertexArray(0);
 
-    // 6. 绘制网格 (比如画一个立方体)
-    glBindVertexArray(cubeVAO);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
-
-    // 7. 交换缓冲区与监听事件
     glfwSwapBuffers(window);
     glfwPollEvents();
 }
@@ -2143,3 +2200,10 @@ vec3 halfwayDir = normalize(lightDir + viewDir);
 float spec = pow(max(dot(norm, halfwayDir), 0.0), 64); // Blinn-Phong 指数通常取 Phong 的 2~4 倍
 ```
 
+
+
+## 第九章.物体材质
+
+在上一章中，物体的颜色是由 `objectColor` 一笔带过的；但在现实世界中，**橡皮泥、金属、钢铁和塑料**对环境光、漫反射和高光的反应是截然不同的。第 9 章的核心目的，就是用结构体（Struct）把物体与光源的属性彻底抽象化和模块化。
+
+1.

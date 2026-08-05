@@ -121,7 +121,7 @@ int main(){
     }
 
     // 从 shader 文件读取源码，编译并链接成可使用的着色器程序。
-    Shader shader(SHADER_DIR "/vertexShader.glsl", SHADER_DIR "/fragmentShader.glsl");
+    Shader shader(SHADER_DIR "/vertexShader.vert", SHADER_DIR "/fragmentShader.frag");
 
     // 顶点数据：每个顶点依次包含 position、color、texture。
     float vertices[] = {
