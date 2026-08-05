@@ -2332,3 +2332,163 @@ lightingShader.setVec3("light.diffuse",  0.5f, 0.5f, 0.5f); // 调暗漫反射�
 lightingShader.setVec3("light.specular", 1.0f, 1.0f, 1.0f);
 ```
 
+
+
+## 第十章.光照贴图
+
+在现实世界中，一个物体的表面很少是材质纯一的。
+
+以一个**带金属边框和铁锁的木箱**为例：
+
+- **木板区域**：漫反射呈木纹颜色，几乎没有镜面高光。
+- **钢铁边框/螺丝**：漫反射呈暗灰色，但对光线非常敏感，高光极强且锐利。
+
+如果只用第 9 章的方法，你只能把整个箱子设为“木头”或者“金属”。而第 10 章的核心思路，就是**把材质属性拆成一张张按像素（UV 坐标）采样的纹理图片**。
+
+本章的核心是引入两种贴图：**漫反射贴图（Diffuse Map）** 和 **高光贴图（Specular Map）**。
+
+
+
+#### 1. 漫反射贴图 (Diffuse Map)
+
+- **本质**：就是我们前面学的普通纹理图片（Texture），它定义了物体表面每个像素点在没有高光时的**固有颜色**。
+
+- **Shader 变化**：把 `material.diffuse` 从 `vec3` 改为 `sampler2D`。
+
+- **物理含义**：如果不开灯，只用漫无边际的微光照亮物体，你看到的那个**表面图样**是什么？
+
+  **作用**：它决定了物体**基础颜色**的分布。
+
+  **现实类比**：
+
+  - 一个木箱子：上面有棕色的木纹、黑色的缝隙。
+  - 漫反射贴图就是把这个**木纹图**直接贴在 3D 模型表面。
+
+  **代码逻辑**：`diffColor` 告诉 GPU：“这里是棕色，那里是灰色”。
+
+
+
+#### 2. 高光贴图 (Specular Map)
+
+- **本质**：通常是一张**黑白/灰度图**，用来定义物体表面**各个区域的反光强度**。
+
+  - **黑色像素（0.0）**：代表木头、皮革、布料——**不产生高光**。
+  - **白色像素（1.0）**：代表抛光金属、玻璃——**产生最强高光**。
+  - **灰色像素（0.5）**：代表生锈金属、湿润表面——**产生中等高光**。
+
+- **Shader 变化**：把 `material.specular` 也改为 `sampler2D`。
+
+- **物理含义**：当手电筒照在箱子上时，**哪些地方能晃你的眼睛（产生强光斑）？哪些地方吸光不反光？**
+
+  **作用**：它用来控制**高光（Specular）的强弱分布**。
+
+  **现实类比**：
+
+  - 假设这个木箱子的边缘包裹着**铁条**，中间是**粗糙的木头**。
+  - 手电筒照过去，**铁条**会反射出刺眼的白光；而**木头**只会漫反射，不会有亮眼的光斑。
+
+  **高光贴图长什么样？**：
+
+  - 它通常是一张**黑白图**。
+  - **铁条/螺丝对应的位置**：画成**白色**（RGB 值为 1.0）。
+  - **木头对应的位置**：画成**黑色**（RGB 值为 0.0）。
+
+
+
+#### 3.GLSL 片段着色器（FS）的重构
+
+```glsl
+#version 330 core
+
+out vec4 FragColor;
+
+in vec3 fragPos;
+in vec3 normal;
+in vec2 TexCoords; // 从顶点着色器传过来的 UV 坐标
+
+struct Light {
+    vec3 position;  // 光源位置
+    vec3 ambient;   // 光源的环境光强度（通常设低一点，如 vec3(0.2)）
+    vec3 diffuse;   // 光源的漫反射强度（通常为光源的主色调，如 vec3(0.5)）
+    vec3 specular;  // 光源的高光强度（通常设为全强，如 vec3(1.0)）
+};
+    
+/*struct Material {
+    vec3 ambient;   // 物体在环境光下反射什么颜色（通常与 diffuse 一致）
+    vec3 diffuse;   // 物体在漫反射光下的固有色（例如珊瑚红）
+    vec3 specular;  // 物体高光斑点的颜色（金属通常带有自身颜色，塑料高光多为白色）
+    float shininess;// 高光反光度/散射半径（数值越大，高光斑点越小、越锐利）
+};*/
+    
+struct Material {
+    sampler2D diffuse;   // 漫反射贴图（替代了原先的 vec3 diffuse）
+    sampler2D specular;  // 高光贴图（替代了原先的 vec3 specular）
+    float     shininess; // 高光散射半径/粗糙度
+};
+//材质
+uniform Material material;
+
+//光源颜色
+uniform Light light;
+
+//光源位置
+uniform vec3 lightPos;
+
+//摄像机位置
+uniform vec3 cameraPos;
+
+void main()
+{
+    //物体最终显示颜色 = 光源影响因子 * 物体表面颜色;
+    //光源影响因子 = 环境光 + 漫反射 + 高光
+
+    //方向向量
+    vec3 N = normalize(normal);
+    vec3 L = normalize(light.position - fragPos); //入射光向量的反向量
+    vec3 R = reflect(-L,N);                 //反射光向量
+    vec3 V = normalize(cameraPos - fragPos);//相机方向向量的反向量
+    vec3 H = normalize(L+V);          //半角向量
+    vec3 diffColor = vec3(texture(material.diffuse, TexCoords)); //从漫反射贴图中采样出基础颜色
+
+    //环境光，通常直接使用漫反射贴图的颜色
+    vec3 ambient = light.ambient * diffColor;
+
+    //漫反射
+    float diff  = max(dot(N,L),0.0);  //入射光和法线夹角
+    vec3 diffuse = light.diffuse * (diff * diffColor);
+
+    //镜面高光 (Specular)：根据高光贴图采样值，决定当前像素能产生多少高光
+    float spec = pow(max(dot(V,R),0.0),material.shininess);  //反射光和相机夹角,使用pow进行光线集中收束
+    // 重点：从高光贴图（specular map）采样
+    vec3 specMask = vec3(texture(material.specular, TexCoords));
+    vec3 specular = light.specular * (spec * specMask);
+
+    //物体最终显示颜色
+    vec3 objColor = ambient + diffuse + specular;
+
+    FragColor = vec4(objColor,1.0);
+}
+```
+
+
+
+#### 4.C++ 端的纹理绑定
+
+既然 `material.diffuse` 和 `material.specular` 变成了纹理，在 C++ 渲染循环中就需要使用**不同的纹理单元（Texture Units）**
+
+```glsl
+// 1. 激活并绑定漫反射贴图到 GL_TEXTURE0
+glActiveTexture(GL_TEXTURE0);
+glBindTexture(GL_TEXTURE_2D, diffuseMap);
+lightingShader.setInt("material.diffuse", 0);
+
+// 2. 激活并绑定高光贴图到 GL_TEXTURE1
+glActiveTexture(GL_TEXTURE1);
+glBindTexture(GL_TEXTURE_2D, specularMap);
+lightingShader.setInt("material.specular", 1);
+
+// 3. 绘制物体
+glBindVertexArray(cubeVAO);
+glDrawArrays(GL_TRIANGLES, 0, 36);
+```
+
