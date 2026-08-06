@@ -2566,3 +2566,293 @@ void main()
 }
 ```
 
+
+
+## 第十一章.投光物（Light Casters)
+
+在前面几章中，我们使用的光源都是一个**固定位置的点**，发出的光均匀地向四周辐射。但在真实世界和游戏开发中，光源的形式极其丰富。第 11 章的核心目标，就是将光照系统升级，能够模拟现实世界中的**三种基本光源**：
+
+1. **平行光 / 定向光（Directional Light）**：模拟太阳光。
+2. **点光源（Point Light）**：模拟灯泡，带有距离衰减（Attenuation）。
+3. **聚光灯（Spotlight）**：模拟手电筒/聚光手电，带有圆锥视锥与边缘平滑打光（Soft Edges）。
+
+
+
+#### 1.定向光 / 平行光 (Directional Light)
+
+当光源距离场景**无限远**时（最典型的就是太阳），它发出的所有光线到达受照物体时，彼此之间可以近似看作是**完全平行的**。
+
+- **区别于点光源**：点光源的入射方向 $L$ 取决于片段的位置（`normalize(light.position - FragPos)`）；而定向光的入射方向 $L$ 对场景里的**所有像素都是恒定不变的**。
+- **没有位置，只有方向**：定向光不需要 `position` 变量，只需要一个 `direction`（光线射向的方向）。
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+
+in vec3 FragPos;
+in vec3 Normal;
+in vec2 TexCoords;
+
+struct Material {
+    sampler2D diffuse;
+    sampler2D specular;
+    float     shininess;
+};
+
+// 平行光结构体：只有方向，没有位置，也没有距离衰减
+struct DirLight {
+    vec3 direction; // 光线照射的方向 (例如：vec3(-0.2, -1.0, -0.3))
+
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+};
+
+uniform Material material;
+uniform DirLight dirLight;
+uniform vec3 viewPos;
+
+void main() {
+    
+    //工具向量
+    vec3 N = normalize(normal);
+    vec3 L = normalize(-dirLight.diretion);	// 注意：dirLight.direction 是“光源射出的方向”
+    vec3 V = reflect(viewPos - fragPos);
+    vec3 R = reflect(-L,N);
+    
+    // 1. 采样纹理
+    vec3 diffColor = vec3(texture(material.diffuse, TexCoords));
+    vec3 specMask  = vec3(texture(material.specular, TexCoords));
+
+    // 2. 环境光
+    vec3 ambient = dirLight.ambient * diffColor;
+
+    // 3. 漫反射
+    float diff = max(dot(N, L), 0.0);
+    vec3 diffuse = dirLight.diffuse * (diff * diffColor);
+
+    // 4. 镜面高光
+    float spec = pow(max(dot(V, R), 0.0), material.shininess);
+    vec3 specular = dirLight.specular * (spec * specMask);
+
+    // 5. 合成最终颜色
+    vec3 result = ambient + diffuse + specular;
+    FragColor = vec4(result, 1.0);
+}
+```
+
+
+
+#### 2.点光源与衰减 (Point Light & Attenuation)
+
+##### 物理与数学原理
+
+现实中的点光源（如蜡烛、灯泡）向四面八方辐射光线，能量随距离增加而向周围球面扩散。根据物理学逆平方定律，**光强与距离的平方成反比**。
+
+在实时图形学中，纯粹的逆平方衰减在距离很近时会导致光强过高过曝，在远距离时又衰减得不够自然。工业界普遍使用**二次多项式衰减公式**：
+
+$$F_{\text{att}} = \frac{1.0}{K_c + K_l \cdot d + K_q \cdot d^2}$$
+
+- $d$：片段与光源之间的距离：`length(light.position - FragPos)`。
+- $K_c$ (Constant 常数项)：通常设为 `1.0`，保证分母永远不小于 1，防止在极近距离时光强爆发。
+- $K_l$ (Linear 线性项)：控制较近距离内的线性衰减。
+- $K_q$ (Quadratic 二次项)：控制远距离的指数级快速衰减。
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+
+in vec3 FragPos;
+in vec3 Normal;
+in vec2 TexCoords;
+
+struct Material {
+    sampler2D diffuse;
+    sampler2D specular;
+    float     shininess;
+};
+
+// 点光源结构体：需要位置 + 衰减系数
+struct PointLight {
+    vec3 position;
+
+    // 衰减系数
+    float constant;  // Kc
+    float linear;    // Kl
+    float quadratic; // Kq
+
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+};
+
+uniform Material material;
+uniform PointLight pointLight;
+uniform vec3 viewPos;
+
+void main() {
+    // 1. 采样纹理
+    vec3 diffColor = vec3(texture(material.diffuse, TexCoords));
+    vec3 specMask  = vec3(texture(material.specular, TexCoords));
+
+    // 2. 计算距离与衰减因子 (Attenuation)
+    float distance    = length(pointLight.position - FragPos);
+    float attenuation = 1.0 / (pointLight.constant + 
+                               pointLight.linear * distance + 
+                               pointLight.quadratic * (distance * distance));
+
+    // 3. 环境光 (环境光通常也乘衰减，防止远处的物体被环境光过度照亮)
+    vec3 ambient = pointLight.ambient * diffColor;
+
+    // 4. 漫反射
+    vec3 norm = normalize(Normal);
+    vec3 lightDir = normalize(pointLight.position - FragPos);
+    float diff = max(dot(norm, lightDir), 0.0);
+    vec3 diffuse = pointLight.diffuse * (diff * diffColor);
+
+    // 5. 镜面高光
+    vec3 viewDir = normalize(viewPos - FragPos);
+    vec3 reflectDir = reflect(-lightDir, norm);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), material.shininess);
+    vec3 specular = pointLight.specular * (spec * specMask);
+
+    // 6. 应用衰减因子
+    ambient  *= attenuation;
+    diffuse  *= attenuation;
+    specular *= attenuation;
+
+    vec3 result = ambient + diffuse + specular;
+    FragColor = vec4(result, 1.0);
+}
+```
+
+
+
+#### 3.聚光灯与边缘平滑羽化 (Spotlight & Soft Edges)
+
+##### 物理与数学原理
+
+聚光灯（如手电筒、汽车大灯）只向某个特定方向的**锥体（Cone）** 范围内发射光线。
+
+我们用两个切角（Cutoff Angle）来定义这个圆锥：
+
+1. **内切角 $\phi$ (Inner Cutoff)**：内圆锥范围，处于此区域内的像素接收 100% 的聚光照射。
+2. **外切角 $\gamma$ (Outer Cutoff)**：外圆锥范围。内角与外角之间的区域，光强从 1.0 平滑过渡到 0.0（实现边缘羽化/软边缘效果）。
+
+为了避免在 Shader 里频繁计算开销昂贵的反三角函数（`acos`），我们**直接比较向量的点积（余弦值 $\cos$）**：
+
+$$\theta = \text{dot}(\text{lightDir}, \text{normalize}(-\text{spotLight.direction}))$$
+
+其中：
+
+- $\theta$ 为当前片段与聚光灯中轴线的夹角余弦值。
+- 注意：**角度越大，余弦值反而越小**！因此 $\cos(\text{inner}) > \cos(\text{outer})$。
+
+边缘羽化插值强度 $I$ 的计算公式为：
+
+$$I = \text{clamp}\left(\frac{\theta - \text{outerCutOff}}{\text{cutOff} - \text{outerCutOff}}, \,0.0,\, 1.0\right)$$
+
+- 当 $\theta \ge \text{cutOff}$（在内切角内部）：$I = 1.0$（全亮）。
+- 当 $\theta \le \text{outerCutOff}$（在外切角外部）：$I = 0.0$（全暗）。
+- 当处于内外切角之间时：$I$ 在 $0.0 \sim 1.0$ 之间平滑过渡。
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+
+in vec3 FragPos;
+in vec3 Normal;
+in vec2 TexCoords;
+
+struct Material {
+    sampler2D diffuse;
+    sampler2D specular;
+    float     shininess;
+};
+
+struct SpotLight {
+    vec3 position;  // 聚光灯位置 (手电筒位置)
+    vec3 direction; // 聚光灯朝向 (手电筒照射方向)
+
+    // 传进来的是角度的余弦值 cos(angle)
+    float cutOff;      // 内切角余弦值 (如 cos(12.5°))
+    float outerCutOff; // 外切角余弦值 (如 cos(17.5°))
+
+    // 聚光灯同样有距离衰减
+    float constant;
+    float linear;
+    float quadratic;
+
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+};
+
+uniform Material material;
+uniform SpotLight spotLight;
+uniform vec3 viewPos;
+
+void main() {
+    // 1. 采样纹理
+    vec3 diffColor = vec3(texture(material.diffuse, TexCoords));
+    vec3 specMask  = vec3(texture(material.specular, TexCoords));
+
+    // 2. 计算光线方向和距离衰减
+    vec3 lightDir = normalize(spotLight.position - FragPos);
+    float distance = length(spotLight.position - FragPos);
+    float attenuation = 1.0 / (spotLight.constant + 
+                               spotLight.linear * distance + 
+                               spotLight.quadratic * (distance * distance));
+
+    // 3. 计算聚光灯边缘平滑强度 (Intensity)
+    // theta 是当前光线 lightDir 与聚光灯中心方向 (-spotLight.direction) 的夹角余弦值
+    float theta = dot(lightDir, normalize(-spotLight.direction));
+    float epsilon = spotLight.cutOff - spotLight.outerCutOff;
+    // clamp 函数把结果限制在 [0.0, 1.0] 范围内
+    float intensity = clamp((theta - spotLight.outerCutOff) / epsilon, 0.0, 1.0);
+
+    // 4. 环境光 (不受聚光灯切角强度影响，确保锥体外不是绝对死黑，但受距离衰减影响)
+    vec3 ambient = spotLight.ambient * diffColor * attenuation;
+
+    // 5. 漫反射
+    vec3 norm = normalize(Normal);
+    float diff = max(dot(norm, lightDir), 0.0);
+    vec3 diffuse = spotLight.diffuse * (diff * diffColor) * attenuation * intensity;
+
+    // 6. 镜面高光
+    vec3 viewDir = normalize(viewPos - FragPos);
+    vec3 reflectDir = reflect(-lightDir, norm);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), material.shininess);
+    vec3 specular = spotLight.specular * (spec * specMask) * attenuation * intensity;
+
+    // 7. 最终合成
+    vec3 result = ambient + diffuse + specular;
+    FragColor = vec4(result, 1.0);
+}
+```
+
+
+
+4.c++侧传递数据
+
+```glsl
+// 在 Render Loop 中：
+
+// 1. 将聚光灯位置与摄像机绑定（实现手电筒效果）
+lightingShader.setVec3("spotLight.position", camera.Position);
+lightingShader.setVec3("spotLight.direction", camera.Front);
+
+// 2. 传入切角的余弦值（千万不要在 CPU 端传角度度数给 Shader，要传 cos 值！）
+lightingShader.setFloat("spotLight.cutOff", glm::cos(glm::radians(12.5f)));
+lightingShader.setFloat("spotLight.outerCutOff", glm::cos(glm::radians(17.5f)));
+
+// 3. 设置距离衰减系数 (以 50 米覆盖范围为例)
+lightingShader.setFloat("spotLight.constant", 1.0f);
+lightingShader.setFloat("spotLight.linear", 0.09f);
+lightingShader.setFloat("spotLight.quadratic", 0.032f);
+```
+
+
+
+## 第十二章.多光源
+

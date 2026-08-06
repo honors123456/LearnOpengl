@@ -38,8 +38,8 @@ void main()
     //方向向量
     vec3 N = normalize(normal);
     vec3 L = normalize(light.position - fragPos); //入射光向量的反向量
-    vec3 R = reflect(-L,N);                 //反射光向量
-    vec3 V = normalize(cameraPos - fragPos);//相机方向向量的反向量
+    vec3 R = reflect(-L,N);                       //反射光向量
+    vec3 V = normalize(cameraPos - fragPos);      //相机方向向量的反向量
 
     vec3 diffuseColor = texture(material.diffuse, TexCoords).rgb;
     vec3 specularColor = texture(material.specular, TexCoords).rgb;

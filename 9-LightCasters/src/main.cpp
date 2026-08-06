@@ -1,6 +1,7 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <iostream>
+#include <string>
 #include <opencv2/opencv.hpp>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -17,6 +18,10 @@ float cubeYaw = 20.0f;
 float cubePitch = 20.0f;
 int framebufferWidth = 800;
 int framebufferHeight = 600;
+
+// 光源类型：0=平行光 1=点光源 2=聚光灯（按数字键 1/2/3 切换）
+int lightType = 0;
+const char* lightTypeNames[] = { "平行光 Directional", "点光源 Point", "聚光灯 Spot" };
 
 // 时间补偿变量
 float deltaTime = 0.0f;
@@ -96,6 +101,11 @@ void processInput(GLFWwindow *window) {
         camera.ProcessKeyboard(LEFT, deltaTime);
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
         camera.ProcessKeyboard(RIGHT, deltaTime);
+
+    // 数字键 1/2/3 切换光源类型
+    if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) lightType = 0;
+    if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) lightType = 1;
+    if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) lightType = 2;
 
 }
 
@@ -209,52 +219,12 @@ int main(){
     glGenerateMipmap(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    //放射贴图 (Emission Map)
-    cv::Mat emissiveImage = cv::imread(TEXTURE_FILE3, cv::IMREAD_UNCHANGED);
-    if (emissiveImage.empty()) {
-        std::cerr << "Failed to load texture: " << TEXTURE_FILE3 << std::endl;
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-
-    // OpenGL 的纹理原点位于左下角，因此先将 OpenCV 图像垂直翻转。
-    cv::flip(emissiveImage, emissiveImage, 0);
-    if (emissiveImage.channels() == 4) {
-        cv::cvtColor(emissiveImage, emissiveImage, cv::COLOR_BGRA2RGBA);
-    } else if (emissiveImage.channels() == 3) {
-        cv::cvtColor(emissiveImage, emissiveImage, cv::COLOR_BGR2RGB);
-    } else if (emissiveImage.channels() == 1) {
-        cv::cvtColor(emissiveImage, emissiveImage, cv::COLOR_GRAY2RGB);
-    } else {
-        std::cerr << "Unsupported texture channel count: " << emissiveImage.channels() << std::endl;
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-    //放射纹理数据上传gpu
-    GLuint emissiveMap = 0;
-    glGenTextures(1, &emissiveMap);
-    glBindTexture(GL_TEXTURE_2D, emissiveMap);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
-                 emissiveImage.cols, emissiveImage.rows, 0, GL_RGB,
-                 GL_UNSIGNED_BYTE, emissiveImage.data);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
     {
 
     //物体着色器
     Shader objShader(SHADER_DIR "/objectShader.vert", SHADER_DIR "/objectShader.frag");
 
-    //光源着色器
+    //光源着色器（画一个白色小方块标记光源位置，便于观察点光源/聚光灯）
     Shader lightShader(SHADER_DIR "/lightShader.vert", SHADER_DIR "/lightShader.frag");
 
     // 物体顶点数据：每个顶点依次包含位置、法线和纹理坐标。
@@ -337,15 +307,12 @@ int main(){
     // 解绑 VAO，避免后续误改它记录的状态。
     glBindVertexArray(0);
 
-    //光源
-    //灯泡物体的 VAO (复用同一个 VBO 的顶点位置即可)
+    // 光源位置小方块的 VAO（复用同一个 VBO，只需位置属性）
     unsigned int lightCubeVAO;
     glGenVertexArrays(1, &lightCubeVAO);
     glBindVertexArray(lightCubeVAO);
-
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,EBO);
-    // 灯泡只需要位置属性，不需要法线
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
     glBindVertexArray(0);
@@ -358,8 +325,8 @@ int main(){
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glEnable(GL_DEPTH_TEST);
 
-    //定义光源位置
-    glm::vec3 lightPos(1.0f, 1.0f, 2.0f);     // 光源在世界空间中的坐标
+    // 光源位置（点光源/聚光灯使用；平行光只取其方向作示意）
+    glm::vec3 lightPos(1.2f, 1.0f, 2.0f);
 
     lastFrame = static_cast<float>(glfwGetTime());
     while(!glfwWindowShouldClose(window))
@@ -380,19 +347,16 @@ int main(){
             : 1.0f;
         glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), aspect, 0.1f, 100.0f);
 
-        //光源
+        //绘制光源位置小方块
         lightShader.use();
         glm::mat4 lightModel = glm::mat4(1.0f);
         lightModel = glm::translate(lightModel, lightPos);
         lightModel = glm::scale(lightModel, glm::vec3(0.2f));
-
-        lightShader.setMat4("model",lightModel);
-        lightShader.setMat4("view",view);
-        lightShader.setMat4("projection",projection);
-
-        //绘制光源正方体
+        lightShader.setMat4("model", lightModel);
+        lightShader.setMat4("view", view);
+        lightShader.setMat4("projection", projection);
         glBindVertexArray(lightCubeVAO);
-        glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
+        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
 
         //物体对象
@@ -409,25 +373,34 @@ int main(){
         objShader.setMat3("normalMatrix",normalMatrix);
         objShader.setVec3("cameraPos",camera.Position);
 
-        // 设置 Light 结构体
+        // 设置 Light 结构体（三种光源共用全部字段）
+        objShader.setInt("light.type", lightType);
         objShader.setVec3("light.position", lightPos);
+        if (lightType == 0)
+            objShader.setVec3("light.direction", glm::vec3(-0.2f, -1.0f, -0.3f)); // 平行光：固定斜上方
+        else
+            objShader.setVec3("light.direction", glm::normalize(-lightPos));      // 聚光灯：指向物体中心
+        objShader.setFloat("light.cutOff",      glm::cos(glm::radians(12.5f)));
+        objShader.setFloat("light.outerCutOff", glm::cos(glm::radians(17.5f)));
+        objShader.setFloat("light.constant",  1.0f);
+        objShader.setFloat("light.linear",    0.09f);
+        objShader.setFloat("light.quadratic", 0.032f);
         objShader.setVec3("light.ambient",  glm::vec3(0.2f, 0.2f, 0.2f));
-        objShader.setVec3("light.diffuse",  glm::vec3(0.5f, 0.5f, 0.5f)); // 调暗漫反射试一下效果
+        objShader.setVec3("light.diffuse",  glm::vec3(0.8f, 0.8f, 0.8f));
         objShader.setVec3("light.specular", glm::vec3(1.0f, 1.0f, 1.0f));
+
+        // 更新窗口标题，提示当前光源类型
+        glfwSetWindowTitle(window, lightTypeNames[lightType]);
 
         // 设置 Material 结构体
         objShader.setInt("material.diffuse", 0);
         objShader.setInt("material.specular", 1);
-        objShader.setInt("material.emission", 2);
         objShader.setFloat("material.shininess", 64.0f);
-        objShader.setFloat("time", static_cast<float>(glfwGetTime()));
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, diffuseMap);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, specularMap);
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, emissiveMap);
 
         //绘制物体正方体
         glBindVertexArray(VAO);
@@ -441,7 +414,6 @@ int main(){
     glDeleteVertexArrays(1, &VAO);
     glDeleteVertexArrays(1, &lightCubeVAO);
     glDeleteBuffers(1, &VBO);
-    glDeleteBuffers(1, &EBO);
     glDeleteTextures(1, &diffuseMap);
     glDeleteTextures(1, &specularMap);
     }
