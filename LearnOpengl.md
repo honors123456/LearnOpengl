@@ -2856,3 +2856,538 @@ lightingShader.setFloat("spotLight.quadratic", 0.032f);
 
 ## 第十二章.多光源
 
+在实际游戏或 3D 引擎中，场景中很少只有一个光源。通常会有一个太阳光（平行光）、若干个路灯或火把（点光源）、以及主角持有的手电筒（聚光灯）。
+
+第 12 章的核心，就是**将第 11 章的三种光源模块化**，在一个片段着色器（Fragment Shader）中，把所有光源对当前像素的贡献全部累加起来。
+
+
+
+#### 1.核心架构设计
+
+为了保持 Shader 代码的整洁与高效，我们需要运用 **GLSL 函数化** 的思路：
+
+1. 为每种光源类型编写一个独立的计算函数：
+   - `vec3 CalcDirLight(DirLight light, vec3 normal, vec3 viewDir)`
+   - `vec3 CalcPointLight(PointLight light, vec3 normal, vec3 fragPos, vec3 viewDir)`
+   - `vec3 CalcSpotLight(SpotLight light, vec3 normal, vec3 fragPos, vec3 viewDir)`
+2. 在 `main()` 函数中初始化 `vec3 output = vec3(0.0)`。
+3. 依次调用各光源函数，将返回的 RGB 颜色叠加（Additivie Blending）到 `output` 中。
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+
+in vec3 FragPos;
+in vec3 Normal;
+in vec2 TexCoords;
+
+// ------------------ 结构体定义 ------------------
+struct Material {
+    sampler2D diffuse;
+    sampler2D specular;
+    float     shininess;
+};
+
+struct DirLight {
+    vec3 direction;
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+};
+
+struct PointLight {
+    vec3 position;
+    
+    float constant;
+    float linear;
+    float quadratic;
+    
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+};
+
+struct SpotLight {
+    vec3 position;
+    vec3 direction;
+    float cutOff;
+    float outerCutOff;
+    
+    float constant;
+    float linear;
+    float quadratic;
+    
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+};
+
+#define NR_POINT_LIGHTS 4 // 定义点光源数量
+
+// ------------------ Uniform 变量 ------------------
+uniform vec3 viewPos;
+uniform Material material;
+uniform DirLight dirLight;
+uniform PointLight pointLights[NR_POINT_LIGHTS];
+uniform SpotLight spotLight;
+
+// ------------------ 函数声明 ------------------
+vec3 CalcDirLight(DirLight light, vec3 normal, vec3 viewDir);
+vec3 CalcPointLight(PointLight light, vec3 normal, vec3 fragPos, vec3 viewDir);
+vec3 CalcSpotLight(SpotLight light, vec3 normal, vec3 fragPos, vec3 viewDir);
+
+void main() {
+    // 属性准备 (全局计算一次，传给各个函数)
+    vec3 norm = normalize(Normal);
+    vec3 viewDir = normalize(viewPos - FragPos);
+
+    // 1. 累加定向光
+    vec3 result = CalcDirLight(dirLight, norm, viewDir);
+
+    // 2. 累加所有点光源
+    for(int i = 0; i < NR_POINT_LIGHTS; i++) {
+        result += CalcPointLight(pointLights[i], norm, FragPos, viewDir);
+    }
+
+    // 3. 累加聚光灯 (手电筒)
+    result += CalcSpotLight(spotLight, norm, FragPos, viewDir);
+
+    FragColor = vec4(result, 1.0);
+}
+
+// ------------------ 函数实现 ------------------
+
+// 计算平行光
+vec3 CalcDirLight(DirLight light, vec3 normal, vec3 viewDir) {
+    vec3 lightDir = normalize(-light.direction);
+    
+    // 漫反射
+    float diff = max(dot(normal, lightDir), 0.0);
+    // 镜面高光
+    vec3 reflectDir = reflect(-lightDir, normal);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), material.shininess);
+    
+    // 采样贴图
+    vec3 ambientColor  = vec3(texture(material.ambient, TexCoords));
+    vec3 diffuseColor  = vec3(texture(material.diffuse, TexCoords));
+    vec3 specularColor = vec3(texture(material.specular, TexCoords));
+    
+    // 合成
+    vec3 ambient  = light.ambient * ambientColor;
+    vec3 diffuse  = light.diffuse * diff * diffuseColor;
+    vec3 specular = light.specular * spec * specularColor;
+    
+    return (ambient + diffuse + specular);
+}
+
+// 计算点光源
+vec3 CalcPointLight(PointLight light, vec3 normal, vec3 fragPos, vec3 viewDir) {
+    vec3 lightDir = normalize(light.position - fragPos);
+    
+    // 漫反射
+    float diff = max(dot(normal, lightDir), 0.0);
+    // 镜面高光
+    vec3 reflectDir = reflect(-lightDir, normal);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), material.shininess);
+    
+    // 距离衰减
+    float distance = length(light.position - fragPos);
+    float attenuation = 1.0 / (light.constant + light.linear * distance + light.quadratic * (distance * distance));
+    
+    // 采样贴图
+    vec3 ambientColor  = vec3(texture(material.diffuse, TexCoords));
+    vec3 diffuseColor  = vec3(texture(material.diffuse, TexCoords));
+    vec3 specularColor = vec3(texture(material.specular, TexCoords));
+    
+    // 合成并乘衰减
+    vec3 ambient  = light.ambient * ambientColor * attenuation;
+    vec3 diffuse  = light.diffuse * diff * diffuseColor * attenuation;
+    vec3 specular = light.specular * spec * specularColor * attenuation;
+    
+    return (ambient + diffuse + specular);
+}
+
+// 计算聚光灯
+vec3 CalcSpotLight(SpotLight light, vec3 normal, vec3 fragPos, vec3 viewDir) {
+    vec3 lightDir = normalize(light.position - fragPos);
+    
+    // 漫反射
+    float diff = max(dot(normal, lightDir), 0.0);
+    // 镜面高光
+    vec3 reflectDir = reflect(-lightDir, normal);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), material.shininess);
+    
+    // 衰减
+    float distance = length(light.position - fragPos);
+    float attenuation = 1.0 / (light.constant + light.linear * distance + light.quadratic * (distance * distance));
+    
+    // 聚光灯边缘平滑 (Intensity)
+    float theta = dot(lightDir, normalize(-light.direction));
+    float epsilon = light.cutOff - light.outerCutOff;
+    float intensity = clamp((theta - light.outerCutOff) / epsilon, 0.0, 1.0);
+    
+    // 采样贴图
+    vec3 ambientColor  = vec3(texture(material.diffuse, TexCoords));
+    vec3 diffuseColor  = vec3(texture(material.diffuse, TexCoords));
+    vec3 specularColor = vec3(texture(material.specular, TexCoords));
+    
+    // 合成
+    vec3 ambient  = light.ambient * ambientColor * attenuation;
+    vec3 diffuse  = light.diffuse * diff * diffuseColor * attenuation * intensity;
+    vec3 specular = light.specular * spec * specularColor * attenuation * intensity;
+    
+    return (ambient + diffuse + specular);
+}
+```
+
+
+
+2.C++ 端的数组 Uniform 设置方法
+
+```c++
+// 在 Render Loop 中设置 4 个点光源：
+glm::vec3 pointLightPositions[] = {
+    glm::vec3( 0.7f,  0.2f,  2.0f),
+    glm::vec3(2.3f, -3.3f, -4.0f),
+    glm::vec3(-4.0f,  2.0f, -12.0f),
+    glm::vec3( 0.0f,  0.0f, -3.0f)
+};
+
+for (unsigned int i = 0; i < 4; i++) {
+    std::string baseName = "pointLights[" + std::to_string(i) + "]";
+    
+    lightingShader.setVec3(baseName + ".position", pointLightPositions[i]);
+    lightingShader.setVec3(baseName + ".ambient", 0.05f, 0.05f, 0.05f);
+    lightingShader.setVec3(baseName + ".diffuse", 0.8f, 0.8f, 0.8f);
+    lightingShader.setVec3(baseName + ".specular", 1.0f, 1.0f, 1.0f);
+    lightingShader.setFloat(baseName + ".constant", 1.0f);
+    lightingShader.setFloat(baseName + ".linear", 0.09f);
+    lightingShader.setFloat(baseName + ".quadratic", 0.032f);
+}
+```
+
+
+
+## 第十三章.深度测试(Depth Testing)和深度冲突(Z-Fighting)
+
+在上一个阶段，我们完成了光照系统的搭建。但进入更复杂的 3D 场景时，你会发现一个新的基本问题：**渲染顺序**。如果不告诉 GPU 哪个物体在前面、哪个在后面，后画的物体就会直接遮挡先画的物体，哪怕它实际上应该被挡在后面。
+
+解决这个问题的机制，就是 **深度测试（Depth Testing）**。
+
+
+
+#### 1.深度测试
+
+##### 1. 深度缓冲区 (Depth Buffer / Z-Buffer)
+
+- **本质**：与颜色缓冲区（Color Buffer，存储 RGB 颜色）类似，深度缓冲区是一个由窗口系统（或 GLFW）自动创建的 2D 缓冲阵列。
+
+- **数据格式**：通常每个像素占用 24 位（3 字节）精度。
+
+- **数值范围**：所有深度值在屏幕空间中都被归一化到了 $[0.0, 1.0]$ 区间：
+
+  - `0.0` 代表紧贴着**近平面（Near Plane）**。
+
+  - `1.0` 代表位于**远平面（Far Plane）**。
+
+    
+
+在没有开启深度测试时，OpenGL 绘制物体完全遵循 **“画家算法”（Painter's Algorithm）** —— 后画的像素会直接覆盖先画的像素。
+
+**但这在工程上是不可行的**：
+
+1. **性能极差**：每一帧对几十万个三角形做 CPU 排序，CPU 帧率直接暴跌。
+2. **互相穿插无解**：如果两个三角形在空间中**互相穿插/交叉**（A 穿过 B），你根本无法定义“谁在前面、谁在后面”。
+
+因此，GPU 在硬件层面引入了 **深度缓冲区（Depth Buffer / Z-Buffer）**。
+
+深度缓冲区是一个与屏幕分辨率完全对应的 2D 数组（比如 1920×1080）。每个像素位置不存 RGB，只存一个浮点数 $Z$（通常是 24-bit 精度）。
+
+
+
+在 FS 里拿到的 `gl_FragCoord.z`，**绝对不是真实的物理距离 $z$**，而是一个经过剧烈压缩的**非线性值**。视图空间中，Z是线性的，但是3D到2D的过程，会进行透视转换和映射到[0,1]中，这是一种反比双曲线的变换关系。意味着，**近处（0.1m ~ 1.0m）**：占据了深度缓冲区高达 **90%** 的浮点数精度！**远处（1.0m ~ 100.0m）**：剩下的 **99% 的空间**，只能可怜地挤在 **10%** 的精度区间里！
+
+验证：
+
+```glsl
+// 片段着色器
+//在 FS 里直接把 gl_FragCoord.z 当成颜色输出：
+void main() {
+    // 直接输出 gl_FragCoord.z
+    FragColor = vec4(vec3(gl_FragCoord.z), 1.0);
+}
+
+//把非线性深度还原为线性距离的公式
+//可以在 Shader 里做逆运算，把非线性的 gl_FragCoord.z 还原回真正的物理距离：
+#version 330 core
+out vec4 FragColor;
+
+float near = 0.1; 
+float far  = 100.0; 
+
+// 将非线性深度值 [0, 1] 还原为线性的物理距离 [near, far]
+float LinearizeDepth(float depth) {
+    // 1. 转回 NDC 空间 [-1, 1]
+    float z = depth * 2.0 - 1.0; 
+    // 2. 执行逆透视投影计算
+    return (2.0 * near * far) / (far + near - z * (far - near));	
+}
+
+void main() {
+    float depth = LinearizeDepth(gl_FragCoord.z); // 得到真实的物理米数
+    // 归一化到 [0, 1] 用于颜色显示（除以 far）
+    FragColor = vec4(vec3(depth / far), 1.0);
+}
+```
+
+
+
+##### 2. 测试管线流程
+
+深度测试在片段着色器执行之后、写入颜色缓冲区之前进行（即属于 **Early Depth Testing** 前置测试或**屏幕空间测试**阶段）：
+
+1. 当渲染一个片段时，GPU 将该片段的 $Z$ 值（$z \in [0.0, 1.0]$）与深度缓冲区中**同一坐标位置现有的 Z 值**进行比较。
+2. **测试通过**：该片段比原有的片段更靠近摄像机，GPU 更新颜色缓冲区，并将当前片段的 $Z$ 值写入深度缓冲区。
+3. **测试失败**：该片段被遮挡，GPU **直接丢弃（Discard）** 该片段，不更新任何缓冲区。
+
+
+
+#### 2.API配置
+
+```c++
+// 1. 开启深度测试
+glEnable(GL_DEPTH_TEST);
+
+// 2. 在渲染循环（Render Loop）的每一帧开始时，必须同时清空颜色缓冲区和深度缓冲区！
+glClear(GL_COLOR_BUFFER_MAX | GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+// 3. (可选) 修改深度测试比较函数，默认是 GL_LESS
+// 即：只有当前片段 Z 值 < 缓冲区现有 Z 值时才通过测试
+glDepthFunc(GL_LESS);
+```
+
+
+
+#### 常见的 `glDepthFunc` 测试规则：
+
+| **函数标志** | **通过条件**                        | **适用场景**                 |
+| ------------ | ----------------------------------- | ---------------------------- |
+| `GL_LESS`    | $Z_{\text{new}} < Z_{\text{old}}$   | **默认选项**。渲染不透明物体 |
+| `GL_LEQUAL`  | $Z_{\text{new}} \le Z_{\text{old}}$ | 天空盒（Skybox）渲染         |
+| `GL_ALWAYS`  | 无条件通过                          | 调试或画 HUD UI 元素         |
+| `GL_NEVER`   | 永远不通过                          | 调试                         |
+
+你还可以使用 `glDepthMask(GL_FALSE)` 来**禁用深度写入**（只读取、不更新深度缓冲区），这在后面渲染**半透明物体（Alpha Blending）** 时至关重要。
+
+
+
+#### 3.Z-Fighting（深度冲突）问题与解决方案
+
+在远处（比如 50 米开外），深度缓冲区的精度被压缩到了极致。可能 $50.0$ 米和 $50.01$ 米算出来的 $z_{\text{depth}}$ 值为：
+
+- 50.00m $\rightarrow$ `0.99999988`
+- 50.01m $\rightarrow$ `0.99999989`
+
+由于 24 位单精度浮点数的尾数有限，GPU **在数学上根本无法区分这两个数值的大小**！
+
+这导致场景微小移动或旋转时，GPU 一会儿判定 A 在前，一会儿判定 B 在前，画面呈现出**剧烈的斑驳闪烁**。
+
+
+
+##### 3 种工程解法（按推荐程度排序）：
+
+1.不让多边形物理重合（最根本）
+
+​	在 3D 建模或场景布置时，绝对不要把海报/地毯直接贴在墙面/地面同一平面上，手动偏移 `0.001` 单位。
+
+2.合理设置近平面 `Near`（性价比最高）
+
+​	看前面的公式可知，`near` 越小，精度的拉伸越畸形！
+
+- **错误示范**：`glm::perspective(45.0f, aspect, 0.0001f, 1000.0f);`（`0.0001` 会瞬间吸走 99.9% 的精度，远景直接崩塌）。
+- **正确做法**：将 `near` 提高到 `0.1f` 或 `1.0f`，Z-Fighting 立即消除大半。
+
+3.开启多边形偏移（Polygon Offset）
+
+当绘制贴纸、阴影贴图（Shadow Maps）或网格线框时，利用 GPU 的渲染偏移机制：
+
+```c++
+// 1. 绘制主体地面
+DrawGround();
+
+// 2. 绘制地面的跑道贴纸线
+glEnable(GL_POLYGON_OFFSET_FILL);
+// 两个参数：factor 影响斜率，units 影响最小可分分辨率
+// 负值意味着将深度向“靠近摄像机”的方向推拉
+glPolygonOffset(-1.0f, -1.0f); 
+
+DrawRunwayLines(); // 渲染贴纸，绝对不会与地面发生 Z-Fighting
+
+glDisable(GL_POLYGON_OFFSET_FILL);
+```
+
+
+
+#### 4.c++侧代码
+
+```c++
+int main() {
+    // ... 初始化 GLFW/GLAD ...
+
+    // 1. 全局开启深度测试
+    glEnable(GL_DEPTH_TEST);
+    
+    // 设置深度比较函数 (默认就是 GL_LESS，即新 Z < 旧 Z 时通过)
+    glDepthFunc(GL_LESS);
+
+    // 渲染循环
+    while (!glfwWindowShouldClose(window)) {
+        // 2. 极其重要：每一帧清空颜色缓冲区的同时，必须清空深度缓冲区！
+        // 如果漏掉 GL_DEPTH_BUFFER_BIT，画面会卡死在第一帧的深度状态
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // 3. 正常激活 Shader、绑定 VAO 并绘制
+        ourShader.use();
+        glBindVertexArray(cubeVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
+}
+```
+
+
+
+## 第十四章.**模板测试（Stencil Testing）与物体轮廓描边（Object Outlining）**
+
+在上一章中，我们用深度缓冲区解决了“谁遮挡了谁”的问题。而 **模板缓冲区（Stencil Buffer）** 则是另一个极具表现力的 2D 掩码缓冲区。它最经典的应用场景之一，就是**游戏和 3D 编辑器中的物体选中/高亮轮廓描边（Outlining/Highlighting）**。
+
+
+
+#### 1.模板缓冲区
+
+. 模板缓冲区的硬件本质：像素级“画板遮罩”。你可以把 **颜色缓冲区（Color Buffer）** 想象成最终展示的画布，把 **深度缓冲区（Depth Buffer）** 想象成记录“深度距离”的测量表，而 **模板缓冲区（Stencil Buffer）** 则是一张**你可以随时用剪刀裁切、随时用画笔标记的遮罩版纸（Masking Tape）**。
+
+
+
+##### 内存布局与数据结构
+
+- 模板缓冲区与颜色、深度缓冲区同宽高（比如 $1920 \times 1080$ 个像素点）。
+
+- 每个像素通常占 **8 个 bit（1 个字节）**，这意味着它的取值范围是 **$0 \sim 255$（即 `0x00` 到 `0xFF`）**。
+
+- 在初始化 OpenGL 窗口上下文（如 GLFW / Qt）时，只要申请了 `GLFW_STENCIL_BITS, 8`，这个缓冲区就在 GPU 显存中静静待命了。
+
+  
+
+##### 渲染管线中的精准位置
+
+片段着色器执行完后，像素需要闯过**三重关卡**才能最终写入屏幕：
+
+$$\text{Fragment Shader} \longrightarrow \mathbf{1.\ \text{Stencil Test}} \longrightarrow \mathbf{2.\ \text{Depth Test}} \longrightarrow \mathbf{3.\ \text{Alpha Blending}} \longrightarrow \text{Frame Buffer}$$
+
+
+
+#### 2.深度拆解：模板测试的两大核心控规
+
+就是什么样的模板能通过测试。
+
+##### 1.比较控制：glStencilFunc(func, ref, mask)
+
+##### 当前片段凭什么能通过测试？
+
+GPU 在处理每个片段时，会执行如下的计算逻辑：
+
+​	**`ref` (Reference Value)**：你设置的**参考值**（$0 \sim 255$）
+
+**`	mask`**：**按位与（AND）掩码**。在比较之前，`ref` 和缓冲区现有的值都会先与 `mask` 相与。通常我们设为 `0xFF`（即全 1，不屏蔽任何 bit）。
+
+**`func`**：比较条件（`GLenum`）：
+
+- `GL_ALWAYS`：总是通过（无条件写入/测试）。
+- `GL_NEVER`：永远不通过。
+- `GL_EQUAL`：相等时通过。
+- `GL_NOTEQUAL`：**不相等时通过**（物体描边算法的核心！）。
+- `GL_LESS` / `GL_LEQUAL` / `GL_GREATER` / `GL_GEQUAL`：大小关系比较。
+
+
+
+##### 2.更新控制：`glStencilOp(sfail, dpfail, dppass)`
+
+##### 测试完之后，模板缓冲区里的值要变成什么？
+
+因为像素在进入颜色缓冲区前还要过“深度测试”这一关，所以 GPU 划分了 **3 种不同命运**：
+
+| **参数名**   | **发生情况**                                           | **常见选择与含义**                          |
+| ------------ | ------------------------------------------------------ | ------------------------------------------- |
+| **`sfail`**  | **模板测试失败**（Stencil Fail）                       | `GL_KEEP`（保持原值不动）                   |
+| **`dpfail`** | 模板测试通过，但**深度测试失败**（Depth Fail）         | `GL_KEEP`（保持原值不动）                   |
+| **`dppass`** | 模板测试通过，且**深度测试通过**（Depth/Stencil Pass） | `GL_REPLACE`（将 `ref` 强行写入模板缓冲区） |
+
+
+
+##### 3.写入开关
+
+```c++
+glStencilMask(0xFF); // 允许写入模板缓冲区（8个 bit 全部开启）
+glStencilMask(0x00); // 禁止写入模板缓冲区（只读模式，锁定保护）
+```
+
+
+
+#### 3.实战推导：物体选中高亮描边（Object Outlining）算法
+
+这套机制可以实现游戏引擎（如 Unity / Unreal）里选中文本、模型时的**描边轮廓效果**。
+
+核心算法思想：两遍绘制（Two-Pass Rendering）
+
+```
+【Pass 1: 标记原模型】
+  1. 开启模板测试，设置条件为 GL_ALWAYS，ref = 1。
+  2. 正常绘制物体。
+  3. 结果：屏幕上物体占用的像素，模板值全部变成了 1。
+            ┌─────────┐
+            │  Stencil│
+            │   = 1   │
+            └─────────┘
+
+【Pass 2: 绘制放大的轮廓】
+  1. 模板条件改为 GL_NOTEQUAL, ref = 1 (只有 Stencil != 1 的地方才能画！)。
+  2. 禁用模板写入 (glStencilMask(0x00))，关闭深度测试 (glDisable(GL_DEPTH_TEST))。
+  3. 将顶点在相机视角下膨胀放大 1.05 倍，用纯色 Shader 绘制。
+  4. 结果：
+      ┌───────────────┐
+      │ 纯色描边 (放大)│
+      │ ┌───────────┐ │
+      │ │被遮挡丢弃! │ │  <- 此处 Stencil == 1，测试失败！
+      │ │(Stencil=1)│ │
+      │ └───────────┘ │
+      └───────────────┘
+```
+
+
+
+##### 绘制放大的轮廓:
+
+方案 ：在 Vertex Shader 中沿法线挤出（Extrude Along Normal，专业做法）,在顶点着色器里，将顶点的局部坐标按照**法线方向**微量推开.
+
+```glsl
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+
+uniform float outlineWidth = 0.03; // 沿着法线挤出的外扩距离
+
+void main() {
+    // 将顶点沿法线方向外扩
+    vec3 extrudedPos = aPos + aNormal * outlineWidth;
+    gl_Position = projection * view * model * vec4(extrudedPos, 1.0);
+}
+```
+
