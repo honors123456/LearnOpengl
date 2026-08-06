@@ -57,7 +57,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     SHADER_DIR="${CMAKE_CURRENT_LIST_DIR}/shader"
-    TEXTURE_FILE="${PROJECT_ROOT_DIR}/container2.png"
+    TEXTURE_FILE1="${PROJECT_ROOT_DIR}/container2.png"
+    TEXTURE_FILE2="${PROJECT_ROOT_DIR}/container2_specular.png"
+    TEXTURE_FILE3="${PROJECT_ROOT_DIR}/matrix.jpg"
 )
 
 # 添加库文件搜索路径，让链接器能找到 External/lib 里的 glfw3.lib。

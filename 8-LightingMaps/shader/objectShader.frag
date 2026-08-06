@@ -16,6 +16,7 @@ struct Light {
 struct Material{
     sampler2D diffuse; //漫反射贴图
     sampler2D specular; //高光贴图
+    sampler2D emission; //放射贴图（自发光）
     float     shininess;//高光散射半径/粗糙度
 };
 
@@ -24,9 +25,10 @@ struct Material{
 uniform Material material;
 //光源颜色
 uniform Light light;
-
 //摄像机位置
 uniform vec3 cameraPos;
+//时间（秒，用于灯带单向流动）
+uniform float time;
 
 void main()
 {
@@ -41,6 +43,11 @@ void main()
 
     vec3 diffuseColor = texture(material.diffuse, TexCoords).rgb;
     vec3 specularColor = texture(material.specular, TexCoords).rgb;
+    vec3 emissiveColor = texture(material.emission, TexCoords).rgb;
+
+    // 单向流动：y 随时间单调下移，配合 GL_REPEAT 自然循环（0.2 = 约 5 秒滚完一个周期）
+    vec2 emissiveUV = vec2(TexCoords.x, TexCoords.y - time * 0.2);
+    emissiveColor = texture(material.emission, emissiveUV).rgb;
 
     //环境光
     vec3 ambient = light.ambient * diffuseColor;
@@ -54,7 +61,7 @@ void main()
     vec3 specular = light.specular * spec * specularColor;
 
     //物体最终显示颜色
-    vec3 objColor = ambient + diffuse + specular;
+    vec3 objColor = ambient + diffuse + specular + emissiveColor;
 
     FragColor = vec4(objColor,1.0);
 }

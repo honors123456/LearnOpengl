@@ -131,41 +131,29 @@ int main(){
     }
 
     //设置纹理数据
-    //读图
-    cv::Mat source = cv::imread(TEXTURE_FILE, cv::IMREAD_UNCHANGED);
-    if (source.empty()) {
-        std::cerr << "Failed to load texture: " << TEXTURE_FILE << std::endl;
+    //漫反射贴图
+    cv::Mat diffuseImage = cv::imread(TEXTURE_FILE1, cv::IMREAD_UNCHANGED);
+    if (diffuseImage.empty()) {
+        std::cerr << "Failed to load texture: " << TEXTURE_FILE1 << std::endl;
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
     }
 
     // OpenGL 的纹理原点位于左下角，因此先将 OpenCV 图像垂直翻转。
-    cv::flip(source, source, 0);
-
-    cv::Mat diffuseImage;
-    cv::Mat specularGray;
-    if (source.channels() == 4) {
-        cv::cvtColor(source, diffuseImage, cv::COLOR_BGRA2RGBA);
-        cv::cvtColor(source, specularGray, cv::COLOR_BGRA2GRAY);
-    } else if (source.channels() == 3) {
-        cv::cvtColor(source, diffuseImage, cv::COLOR_BGR2RGB);
-        cv::cvtColor(source, specularGray, cv::COLOR_BGR2GRAY);
-    } else if (source.channels() == 1) {
-        cv::cvtColor(source, diffuseImage, cv::COLOR_GRAY2RGB);
-        specularGray = source.clone();
+    cv::flip(diffuseImage, diffuseImage, 0);
+    if (diffuseImage.channels() == 4) {
+        cv::cvtColor(diffuseImage, diffuseImage, cv::COLOR_BGRA2RGBA);
+    } else if (diffuseImage.channels() == 3) {
+        cv::cvtColor(diffuseImage, diffuseImage, cv::COLOR_BGR2RGB);
+    } else if (diffuseImage.channels() == 1) {
+        cv::cvtColor(diffuseImage, diffuseImage, cv::COLOR_GRAY2RGB);
     } else {
-        std::cerr << "Unsupported texture channel count: " << source.channels() << std::endl;
+        std::cerr << "Unsupported texture channel count: " << diffuseImage.channels() << std::endl;
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
     }
-
-    // 镜面反射贴图使用灰度值控制各区域的高光强度。
-    cv::Mat specularImage;
-    cv::cvtColor(specularGray, specularImage, cv::COLOR_GRAY2RGB);
-
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
     //漫反射纹理数据上传gpu
     GLuint diffuseMap = 0;
@@ -181,6 +169,32 @@ int main(){
                  GL_UNSIGNED_BYTE, diffuseImage.data);
     glGenerateMipmap(GL_TEXTURE_2D);
 
+
+    cv::Mat specularImage = cv::imread(TEXTURE_FILE2, cv::IMREAD_UNCHANGED);
+    if (specularImage.empty()) {
+        std::cerr << "Failed to load texture: " << TEXTURE_FILE2 << std::endl;
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
+
+    // OpenGL 的纹理原点位于左下角，因此先将 OpenCV 图像垂直翻转。
+    cv::flip(specularImage, specularImage, 0);
+    if (specularImage.channels() == 4) {
+        cv::cvtColor(specularImage, specularImage, cv::COLOR_BGRA2RGBA);
+    } else if (specularImage.channels() == 3) {
+        cv::cvtColor(specularImage, specularImage, cv::COLOR_BGR2RGB);
+    } else if (specularImage.channels() == 1) {
+        cv::cvtColor(specularImage, specularImage, cv::COLOR_GRAY2RGB);
+    } else {
+        std::cerr << "Unsupported texture channel count: " << specularImage.channels() << std::endl;
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
     //高光纹理数据上传gpu
     GLuint specularMap = 0;
     glGenTextures(1, &specularMap);
@@ -192,6 +206,46 @@ int main(){
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
                  specularImage.cols, specularImage.rows, 0, GL_RGB,
                  GL_UNSIGNED_BYTE, specularImage.data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    //放射贴图 (Emission Map)
+    cv::Mat emissiveImage = cv::imread(TEXTURE_FILE3, cv::IMREAD_UNCHANGED);
+    if (emissiveImage.empty()) {
+        std::cerr << "Failed to load texture: " << TEXTURE_FILE3 << std::endl;
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
+
+    // OpenGL 的纹理原点位于左下角，因此先将 OpenCV 图像垂直翻转。
+    cv::flip(emissiveImage, emissiveImage, 0);
+    if (emissiveImage.channels() == 4) {
+        cv::cvtColor(emissiveImage, emissiveImage, cv::COLOR_BGRA2RGBA);
+    } else if (emissiveImage.channels() == 3) {
+        cv::cvtColor(emissiveImage, emissiveImage, cv::COLOR_BGR2RGB);
+    } else if (emissiveImage.channels() == 1) {
+        cv::cvtColor(emissiveImage, emissiveImage, cv::COLOR_GRAY2RGB);
+    } else {
+        std::cerr << "Unsupported texture channel count: " << emissiveImage.channels() << std::endl;
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    //高光纹理数据上传gpu
+    GLuint emissiveMap = 0;
+    glGenTextures(1, &emissiveMap);
+    glBindTexture(GL_TEXTURE_2D, emissiveMap);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
+                 emissiveImage.cols, emissiveImage.rows, 0, GL_RGB,
+                 GL_UNSIGNED_BYTE, emissiveImage.data);
     glGenerateMipmap(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -364,12 +418,16 @@ int main(){
         // 设置 Material 结构体
         objShader.setInt("material.diffuse", 0);
         objShader.setInt("material.specular", 1);
+        objShader.setInt("material.emission", 2);
         objShader.setFloat("material.shininess", 64.0f);
+        objShader.setFloat("time", static_cast<float>(glfwGetTime()));
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, diffuseMap);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, specularMap);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, emissiveMap);
 
         //绘制物体正方体
         glBindVertexArray(VAO);
