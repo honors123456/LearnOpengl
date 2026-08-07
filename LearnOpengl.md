@@ -3268,7 +3268,98 @@ int main() {
 
 #### 1.模板缓冲区
 
-. 模板缓冲区的硬件本质：像素级“画板遮罩”。你可以把 **颜色缓冲区（Color Buffer）** 想象成最终展示的画布，把 **深度缓冲区（Depth Buffer）** 想象成记录“深度距离”的测量表，而 **模板缓冲区（Stencil Buffer）** 则是一张**你可以随时用剪刀裁切、随时用画笔标记的遮罩版纸（Masking Tape）**。
+模板缓冲区的硬件本质：像素级“画板遮罩”。你可以把 **颜色缓冲区（Color Buffer）** 想象成最终展示的画布，把 **深度缓冲区（Depth Buffer）** 想象成记录“深度距离”的测量表，而 **模板缓冲区（Stencil Buffer）** 则是一张**你可以随时用剪刀裁切、随时用画笔标记的遮罩版纸（Masking Tape）**
+
+##### GPU 渲染的核心原则永远是：**只有模型（几何体）形状盖到的像素，GPU 才会去处理它。*
+
+
+
+物理类比：喷漆与纸板遮罩（Stencil Template）,想象你是一个街头艺术家，要在墙上用喷漆喷出一个**星形图案**：
+
+步骤 1：取一张完整的卡纸（代表模板缓冲区，初始全是 0）。
+步骤 2：用剪刀在卡纸中间剪出一个星形洞（在星形区域写入 1）。
+步骤 3：把卡纸贴在墙上，拿起红色喷漆对着墙一阵猛喷（渲染绘制）。
+
+结果是什么？**只有卡纸上有洞的地方（值为 1 的区域），红色喷漆才能穿过去留在墙上；卡纸挡住的地方（值为 0 的区域），喷漆全被挡住了。**
+
+在英语里，“Stencil” 本身的意思就是“用来喷漆/印花的镂空样板/刻字板”。
+
+GPU 里的模板缓冲区，就是**显存里的一张数字刻字板**。
+
+
+
+核心逻辑：从“墙”到 GPU 像素
+
+假设你的屏幕分辨率是 4×4 的像素格子。模板缓冲区（Stencil Buffer）就是一张对应大小的表格，每个格子存一个数字（默认是 0）：
+
+初始状态（模板缓冲区全为 0）：
+
+```
+[ 0 ][ 0 ][ 0 ][ 0 ]
+[ 0 ][ 0 ][ 0 ][ 0 ]
+[ 0 ][ 0 ][ 0 ][ 0 ]
+[ 0 ][ 0 ][ 0 ][ 0 ]
+```
+
+##### 第一步：画一个 2x2 的正方形（Pass 1 - 抠洞/标记）
+
+你跟 GPU 说：“我现在要画个正方形。但我**先不画颜色**，我只是要在正方形覆盖的地方，把模板缓冲区里的数字**改成 1**！”
+
+绘制后，模板缓冲区变成了：
+
+```c++
+[ 0 ][ 0 ][ 0 ][ 0 ]
+[ 0 ][ 1 ][ 1 ][ 0 ]  <-- 正方形占用的地方
+[ 0 ][ 1 ][ 1 ][ 0 ]  <-- 被标记成了 1
+[ 0 ][ 0 ][ 0 ][ 0 ]
+```
+
+
+
+##### 第二步：全屏喷橙色油漆（Pass 2 - 过滤绘制）
+
+现在，你拿着橙色油漆准备喷满整个屏幕，但你给 GPU 设定了一条规则：
+
+👉 **“只有模板值【不等于 1】的格子，才允许喷上橙色！”**
+
+GPU 挨个像素检查：
+
+- 边缘的 `0` 格子：不等于 1，**测试通过** $\rightarrow$ 喷上橙色！
+- 中间的 `1` 格子：等于 1 了，**测试失败** $\rightarrow$ 丢弃！不准喷漆！
+
+最终屏幕上的结果：
+
+```c++
+[ 橙 ][ 橙 ][ 橙 ][ 橙 ]
+[ 橙 ][ 无 ][ 无 ][ 橙 ]  <-- 中间被刚才标记的 1 挡住了！
+[ 橙 ][ 无 ][ 无 ][ 橙 ]
+[ 橙 ][ 橙 ][ 橙 ][ 橙 ]
+```
+
+
+
+##### 那它是怎么实现“物体描边”的？
+
+理解了上面的“刻字板”原理，描边就只有**极其简单的两步**：
+
+1. **第一步（画原物体）**：
+
+   你正常画一个角色/箱子。同时告诉 GPU：“凡是这个角色占用的像素，把模板缓冲区对应的格子都**改写成 1**”。
+
+   *(此时角色画好了，显存里也记下了这个角色精准的轮廓形状 `1`)*
+
+2. **第二步（画稍大的纯色外壳）**：
+
+   你把角色**整体放大一圈**（或者沿法线挤出一点），换成纯橙色的 Shader 重新画一次，注意gpu只对物体进行渲染。
+
+   但同时加上规则：**“只有模板值【不等于 1】的地方才能画！”**
+
+**发生了什么？**
+
+- 放大后的橙色角色，**中间绝大部分区域**都落在了刚才第一步标记的 `1` 里面 $\rightarrow$ 全部被遮罩挡住，**画不出来**。
+- 只有放大后**多出来的边缘一圈**，落在了外部模板值为 `0` 的区域 $\rightarrow$ **成功画出橙色**！
+
+这就是为什么中间不会被橙色涂满，**只在最外围露出一圈漂亮的橙色边框**！
 
 
 
@@ -3388,6 +3479,400 @@ void main() {
     // 将顶点沿法线方向外扩
     vec3 extrudedPos = aPos + aNormal * outlineWidth;
     gl_Position = projection * view * model * vec4(extrudedPos, 1.0);
+}
+```
+
+
+
+#### 4.完整的c++ / opengl 工程实现
+
+```c++
+while(!glfwWindowShouldClose(window))
+    {
+        float currentFrame = static_cast<float>(glfwGetTime());
+        deltaTime = currentFrame - lastFrame;
+        lastFrame = currentFrame;
+
+        //开启深度测试和模板测试
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_STENCIL_TEST);
+
+        // 0. 初始化与清空三大缓冲区
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glStencilMask(0xFF);	//开启所有位的写入权限,允许 OpenGL 把数据正常写入或清空模板缓冲区。
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+
+        processInput(window);
+
+        //两个物体都是同一个摄像机，同一个窗口进行观察，所以共用view和projection
+        glm::mat4 view = camera.GetViewMatrix();
+        float aspect = framebufferHeight > 0
+            ? static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight)
+            : 1.0f;
+        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), aspect, 0.1f, 100.0f);
+
+        //光源对象
+        lightShader.use();
+        lightShader.setMat4("view", view);
+        lightShader.setMat4("projection", projection);
+        
+        //物体对象
+        objShader.use();
+        objShader.setMat4("view",view);
+        objShader.setMat4("projection",projection);
+        objShader.setVec3("cameraPos",camera.Position);
+
+        // 平行光（DirLight）
+        objShader.setVec3("dirLight.direction", glm::vec3(-0.2f, -1.0f, -0.3f));
+        objShader.setVec3("dirLight.ambient",  glm::vec3(0.05f, 0.05f, 0.05f));
+        objShader.setVec3("dirLight.diffuse",  glm::vec3(0.4f, 0.4f, 0.4f));
+        objShader.setVec3("dirLight.specular", glm::vec3(0.5f, 0.5f, 0.5f));
+
+        // 4 个点光源（PointLight）
+        for (int i = 0; i < 4; ++i) {
+            std::string p = "pointLights[" + std::to_string(i) + "].";
+            objShader.setVec3(p + "position", pointLightPositions[i]);
+            objShader.setVec3(p + "ambient",  glm::vec3(0.05f, 0.05f, 0.05f));
+            objShader.setVec3(p + "diffuse",  glm::vec3(0.8f, 0.8f, 0.8f));
+            objShader.setVec3(p + "specular", glm::vec3(1.0f, 1.0f, 1.0f));
+            objShader.setFloat(p + "constant",  1.0f);
+            objShader.setFloat(p + "linear",    0.09f);
+            objShader.setFloat(p + "quadratic", 0.032f);
+        }
+
+        // 聚光灯（SpotLight）：跟随相机，模拟手电筒
+        objShader.setVec3("spotLight.position", camera.Position);
+        objShader.setVec3("spotLight.direction", camera.Front);
+        objShader.setFloat("spotLight.cutOff",      glm::cos(glm::radians(12.5f)));
+        objShader.setFloat("spotLight.outerCutOff", glm::cos(glm::radians(15.0f)));
+        objShader.setFloat("spotLight.constant",  1.0f);
+        objShader.setFloat("spotLight.linear",    0.09f);
+        objShader.setFloat("spotLight.quadratic", 0.032f);
+        objShader.setVec3("spotLight.ambient",  glm::vec3(0.0f, 0.0f, 0.0f));
+        objShader.setVec3("spotLight.diffuse",  glm::vec3(1.0f, 1.0f, 1.0f));
+        objShader.setVec3("spotLight.specular", glm::vec3(1.0f, 1.0f, 1.0f));
+
+        // 设置 Material 结构体
+        objShader.setInt("material.diffuse", 0);
+        objShader.setInt("material.specular", 1);
+        objShader.setFloat("material.shininess", 64.0f);
+
+        //设置纹理
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, diffuseMap);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, specularMap);
+
+        //描边轮廓对象
+        singleColorShader.use();
+        glm::mat4 outlineModel = glm::mat4(1.0f);
+        outlineModel = glm::translate(outlineModel, glm::vec3(0.0f, 0.0f, 0.0f));
+        outlineModel = glm::rotate(outlineModel, glm::radians(20.0f), glm::vec3(1.0f, 0.3f, 0.5f));
+        singleColorShader.setMat4("model", outlineModel);
+        singleColorShader.setMat4("view", view);
+        singleColorShader.setMat4("projection", projection);
+        singleColorShader.setVec3("outlineColor", glm::vec3(0.98f, 0.28f, 0.26f)); // 深青色描边
+
+        //pass 1
+    	//如果模板测试和深度测试同时通过，将模板缓冲区对应位置的值替换（REPLACE）为 glStencilFunc 中指定的 ref 值。
+        glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+        glStencilFunc(GL_ALWAYS, 1, 0xFF);	// 规则：无条件通过，指定 ref = 1
+        glStencilMask(0xFF); 				// 允许向模板缓冲区写入数据
+
+        // PASS 1
+    	//绘制光源：光源小方块也写入模板值 1，描边会跳过光源区域，避免轮廓盖住光源
+        lightShader.use();
+        glBindVertexArray(lightCubeVAO);
+        for (int i = 0; i < 4; ++i) {
+            glm::mat4 lightModel = glm::mat4(1.0f);
+            lightModel = glm::translate(lightModel, pointLightPositions[i]);
+            lightModel = glm::scale(lightModel, glm::vec3(0.2f));
+            lightShader.setMat4("model", lightModel);
+            glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0);
+        }
+        glBindVertexArray(0);
+
+    	//pass 1
+        //绘制立方体，该立方体写入模板值1
+        objShader.use();
+        glBindVertexArray(VAO);
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, glm::vec3(0.0f,0.0f,0.0f));
+        model = glm::rotate(model, glm::radians(20.0f), glm::vec3(1.0f, 0.3f, 0.5f));
+        objShader.setMat4("model", model);
+
+        glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(model)));
+        objShader.setMat3("normalMatrix", normalMatrix);
+        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+
+        // PASS 2: 
+    	//GPU 在绘制 Pass 2 的几何体时，会去检查对应位置的模板值。只有模板值【不等于 1】的像素才准画，等于 1 的直接丢弃（Discard）。
+        glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
+        glStencilMask(0x00)；//禁用所有位的写入权限，无论渲染命令成功与否，或者 glStencilOp 设置了什么操作，模板缓冲区里的任何像素值都不会改变。
+        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    	
+        glDisable(GL_DEPTH_TEST); // 关闭禁用深度测试，描边不被自身深度裁剪
+
+		//pass 2
+        //绘制纯色放大版模型（描边），仅在模板值 != 1 的区域渲染
+        singleColorShader.use();
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
+
+    glDeleteVertexArrays(1, &VAO);
+    glDeleteVertexArrays(1, &lightCubeVAO);
+    glDeleteBuffers(1, &VBO);
+    glDeleteBuffers(1, &EBO);
+    glDeleteTextures(1, &diffuseMap);
+    glDeleteTextures(1, &specularMap);
+    }
+```
+
+
+
+
+
+## 第十五章.混合(Blending)与半透明渲染
+
+如果你把之前的“模板测试”比作在画布上用剪刀切块，那“混合”就是**用水彩或彩色玻璃去一层层叠加颜色**。
+
+
+
+#### 1.现实中的物理直觉
+
+你为什么能看到玻璃背后的东西？
+
+在现实世界里，当你透过的红色玻璃看后面的绿树时，你的眼睛接收到的光线其实是**两部分光的混合**：
+
+1. **来自于玻璃本身反射/折射出来的红光**（源头，Source）。
+2. **来自于玻璃后面绿树穿透出来的绿光**（背景，Destination）。
+
+如果玻璃很厚、颜色很深（Alpha 接近 1.0），绿树的光线就被挡住了，你只能看到红玻璃；如果玻璃极薄、几乎全透明（Alpha 接近 0.0），绿树的光线大部分穿透进来，红玻璃的存在感极低。
+
+GPU 在计算渲染颜色时，做的事情和这个物理过程一模一样！
+
+
+
+#### 2.混合计算的数学核心：颜色融合公式
+
+当一个半透明像素（比如玻璃）准备写进屏幕时，屏幕上原本已经画好了背景（比如天空或地面）。GPU 会通过一个**线性加权公式**将它们融合：
+
+$$\text{最终颜色} = (\text{源像素颜色} \times \text{源因子}) + (\text{背景颜色} \times \text{目标因子})$$
+
+
+
+在 OpenGL 中，这四个变量拥有专业的图形学术语：
+
+**$\text{Source (源 / Src)}$**：**当前正在绘制的半透明片段**（例如：正在画的红玻璃，带 $\alpha$ 值）。
+
+**$\text{Destination (目标 / Dst)}$**：**已经存储在颜色缓冲区里的背景像素**（例如：之前画好的蓝色天空）。
+
+**$\text{Src Factor (源混合因子)}$**：给源颜色乘上的权重系数。
+
+**$\text{Dst Factor (目标混合因子)}$**：给目标背景色乘上的权重系数。
+
+##### 常用混合模式：透明玻璃（Alpha Blending），在代码中，最经典、最符合人类视觉直觉的混合设置只有一行：
+
+```c++
+glEnable(GL_BLEND);
+glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+```
+
+我们把这个 API 设置代入上面的数学公式，它其实就是：
+
+$$\text{FinalColor} = (\text{Color}_{\text{src}} \times \alpha_{\text{src}}) + (\text{Color}_{\text{dst}} \times (1 - \alpha_{\text{src}}))$$
+
+
+
+**算一次就懂了：**
+
+假设你想画一块红色的透明玻璃，颜色为 $\text{Red} = (1.0, 0.0, 0.0)$，Alpha 透明度 $\alpha = 0.6$（不透明度为 60%）。
+
+此时屏幕背景已经是白色的天空，颜色为 $\text{White} = (1.0, 1.0, 1.0)$。
+
+- **玻璃贡献**：$(1.0, 0.0, 0.0) \times 0.6 = (0.6, 0.0, 0.0)$
+- **天空贡献**：$(1.0, 1.0, 1.0) \times (1 - 0.6) = (0.4, 0.4, 0.4)$
+- **相加得到最终颜色**：$(0.6, 0.0, 0.0) + (0.4, 0.4, 0.4) = (1.0, 0.4, 0.4)$（一种透着浅白光的红）
+
+
+
+#### 3.Alpha 裁剪（Alpha Testing） vs Alpha 混合（Alpha Blending）
+
+处理带透明通道（Alpha）的贴图时，工业界有两种截然不同的路线。选错路线，不仅性能变差，画面还会出现严重瑕疵。
+
+```c++
+			   ┌───────────────────────────────┐
+               │    贴图包含 Alpha 透明通道      │
+               └──────────────┬────────────────┘
+                              │
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+    【路线 A：Alpha 裁剪】           【路线 B：Alpha 混合】
+    (Discard / Cutout)              (Alpha Blending)
+   Alpha 非 0 即 1 (硬边缘)         Alpha 在 0~1 之间 (连续过渡)
+   示例：树叶、栅栏、铁丝网          示例：玻璃、烟雾、水面、火焰
+```
+
+
+
+##### 路线 A：Alpha 裁剪（Discard / 硬透明）
+
+像**铁丝网**或者**树叶**贴图，像素点的透明度要么是 `0.0`（镂空空隙），要么是 `1.0`（实体网丝）。你根本不需要 GPU 去做复杂的颜色比例加权。
+
+处理方法极其简单粗暴——直接在 **Fragment Shader（片段着色器）** 里用 `discard` 关键字：
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+in vec2 TexCoords;
+
+uniform sampler2D texture_diffuse;
+
+void main() {
+    vec4 texColor = texture(texture_diffuse, TexCoords);
+    
+    // 如果 Alpha 太低（比如小于 0.1），说明是网格空隙，直接把这个片段扔掉！
+    if(texColor.a < 0.1)
+        discard;
+        
+    FragColor = texColor;
+}
+```
+
+**优点**：不需要开启 `glEnable(GL_BLEND)`，也不需要关深度测试，甚至不需要对物体排序，性能极高。
+
+
+
+##### 路线 B：Alpha 混合（真正的半透明）
+
+当你需要渲染玻璃、玻璃杯、烟雾这种边缘柔和、具有连续渐变透明度的物体时，就必须开启 `glEnable(GL_BLEND)`。
+
+但开启它的同时，你也引入了图形学中最令人头疼的问题——**深度冲突与渲染顺序陷阱**。
+
+
+
+我们先看一个经典的图形学 Bug： 如果你先画了一块**离相机很近的玻璃**，再画**玻璃后方远处的箱子**，会发生什么？
+
+【错误的画法逻辑】
+1. 先画近处的半透明玻璃：
+   - GPU 算了颜色，画上了半透明红。
+   - 重点：深度缓冲区（Depth Buffer）更新！记录下了“此像素处有一个很近的物体（Z 值很小）”。
+
+2. 再画远处的箱子：
+   - GPU 准备绘制箱子时，先做【深度测试】。
+   - GPU 发现：“诶？这箱子的 Z 值比刚才记录的 Z 值更大（更远），说明箱子被遮挡了！”
+   - 结果：GPU 直接把箱子的片段丢弃（Discard）了！
+
+【最终画面】
+透过玻璃你看不到背后的箱子，箱子直接凭空消失了！
+
+不透明物体无论先画谁、后画谁，**深度测试（Depth Test）** 都能自动保证近处物体盖住远处物体。但半透明物体要求**远处的物体必须先画在背景上**，近处的半透明物体才能拿到“背景颜色”去乘 $(1 - \alpha)$！
+
+解决半透明穿帮的唯一黄金法则，就是遵循现实中画家的作画习惯（**画家算法 Painter's Algorithm**）：**永远先画远景，再画近景。**
+
+在 OpenGL 引擎中，标准的半透明渲染流程分为 **6 个严密的步骤**：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 步骤 1：开启深度测试 (glEnable(GL_DEPTH_TEST))            │
+└────────────────────────────┬────────────────────────────┘
+                             │
+┌────────────────────────────▼────────────────────────────┐
+│ 步骤 2：先绘制场景中所有【不透明】物体（箱子、墙壁、地面）  │
+└────────────────────────────┬────────────────────────────┘
+                             │
+┌────────────────────────────▼────────────────────────────┐
+│ 步骤 3：根据到摄像机的距离，对所有【半透明】物体从远到近排序 │
+└────────────────────────────┬────────────────────────────┘
+                             │
+┌────────────────────────────▼────────────────────────────┐
+│ 步骤 4：开启混合 (glEnable(GL_BLEND))                   │
+│         设置因子 glBlendFunc(GL_SRC_ALPHA, ...)         │
+└────────────────────────────┬────────────────────────────┘
+                             │
+┌────────────────────────────▼────────────────────────────┐
+│ 步骤 5：按【由远及近】的顺序，依次绘制所有半透明物体      │
+└────────────────────────────┬────────────────────────────┘
+                             │
+┌────────────────────────────▼────────────────────────────┐
+│ 步骤 6：渲染完毕，关闭混合 (glDisable(GL_BLEND))         │
+└─────────────────────────────────────────────────────────┘
+```
+
+
+
+##### 4.C++ 现代 OpenGL 完整排序与渲染实现
+
+我们可以利用 C++ 标准库中的 `std::map` 容器来自动帮你做**由远及近的距离排序**。
+
+在 C++ 的 `std::map<Key, Value>` 中，`Key` 默认按从小到大（升序）**排列。如果我们把“距离相机的距离”作为 Key，使用**反向迭代器（Reverse Iterator）**遍历，就能轻而易举地获得**从大到小（由远及近）的渲染顺序！
+
+```c++
+#include <map>
+#include <vector>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+// 假设场景里有 3 块玻璃窗户的位置
+std::vector<glm::vec3> windowsPositions {
+    glm::vec3(-1.5f, 0.0f, -0.48f),
+    glm::vec3( 1.5f, 0.0f,  0.51f),
+    glm::vec3( 0.0f, 0.0f,  0.7f)
+};
+
+void renderLoop() {
+    // 1. 清空颜色和深度缓冲区
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // 2. 正常绘制场景里所有【不透明物体】（开启深度测试，无需混合）
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    
+    drawOpaqueScene(); // 绘制房子、墙壁、箱子等
+
+    // 3. 距离计算与由远及近排序（核心逻辑）
+    std::map<float, glm::vec3> sortedWindows;
+    for (unsigned int i = 0; i < windowsPositions.size(); i++) {
+        // 计算窗户位置与摄像机位置的欧氏距离
+        float distance = glm::length(camera.Position - windowsPositions[i]);
+        // 存储进 map，map 会根据 Key (distance) 自动将数值小的排在前面
+        sortedWindows[distance] = windowsPositions[i];
+    }
+
+    // -------------------------------------------------------------------------
+    // 4. 开启 Alpha 混合，并设置透明混合因子
+    // -------------------------------------------------------------------------
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // -------------------------------------------------------------------------
+    // 5. 按照由远及近（Key 从大到小）的顺序绘制半透明窗户
+    // -------------------------------------------------------------------------
+    windowShader.use();
+    glBindVertexArray(windowVAO);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, windowTexture);
+
+    // 使用 rbegin() 到 rend() 倒序遍历 map（从距离最远的窗户开始画）
+    for (auto it = sortedWindows.rbegin(); it != sortedWindows.rend(); ++it) {
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, it->second); // 取出当前窗户的世界坐标
+        windowShader.setMat4("model", model);
+        
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
+
+    // -------------------------------------------------------------------------
+    // 6. 还原状态，避免影响下一帧
+    // -------------------------------------------------------------------------
+    glDisable(GL_BLEND);
 }
 ```
 
