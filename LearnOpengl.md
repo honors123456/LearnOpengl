@@ -3723,7 +3723,7 @@ $$\text{FinalColor} = (\text{Color}_{\text{src}} \times \alpha_{\text{src}}) + (
 
 ##### 路线 A：Alpha 裁剪（Discard / 硬透明）
 
-像**铁丝网**或者**树叶**贴图，像素点的透明度要么是 `0.0`（镂空空隙），要么是 `1.0`（实体网丝）。你根本不需要 GPU 去做复杂的颜色比例加权。
+像**铁丝网**或者**栅栏**贴图，像素点的透明度要么是 `0.0`（镂空空隙），要么是 `1.0`（实体网丝）。你根本不需要 GPU 去做复杂的颜色比例加权。
 
 处理方法极其简单粗暴——直接在 **Fragment Shader（片段着色器）** 里用 `discard` 关键字：
 
@@ -3766,8 +3766,12 @@ void main() {
 
 2. 再画远处的箱子：
    - GPU 准备绘制箱子时，先做【深度测试】。
+   
    - GPU 发现：“诶？这箱子的 Z 值比刚才记录的 Z 值更大（更远），说明箱子被遮挡了！”
+   
    - 结果：GPU 直接把箱子的片段丢弃（Discard）了！
+   
+     
 
 【最终画面】
 透过玻璃你看不到背后的箱子，箱子直接凭空消失了！
@@ -3826,53 +3830,375 @@ std::vector<glm::vec3> windowsPositions {
     glm::vec3( 0.0f, 0.0f,  0.7f)
 };
 
-void renderLoop() {
-    // 1. 清空颜色和深度缓冲区
+while(!glfwWindowShouldClose(window))
+{
+    float currentFrame = static_cast<float>(glfwGetTime());
+    deltaTime = currentFrame - lastFrame;
+    lastFrame = currentFrame;
+
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // 2. 正常绘制场景里所有【不透明物体】（开启深度测试，无需混合）
     glEnable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
-    
-    drawOpaqueScene(); // 绘制房子、墙壁、箱子等
 
-    // 3. 距离计算与由远及近排序（核心逻辑）
-    std::map<float, glm::vec3> sortedWindows;
-    for (unsigned int i = 0; i < windowsPositions.size(); i++) {
-        // 计算窗户位置与摄像机位置的欧氏距离
-        float distance = glm::length(camera.Position - windowsPositions[i]);
-        // 存储进 map，map 会根据 Key (distance) 自动将数值小的排在前面
-        sortedWindows[distance] = windowsPositions[i];
-    }
+    processInput(window);
 
-    // -------------------------------------------------------------------------
-    // 4. 开启 Alpha 混合，并设置透明混合因子
-    // -------------------------------------------------------------------------
+    //两个物体都是同一个摄像机，同一个窗口进行观察，所以共用view和projection
+    glm::mat4 view = camera.GetViewMatrix();
+    float aspect = framebufferHeight > 0
+        ? static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight)
+        : 1.0f;
+    glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), aspect, 0.1f, 100.0f);
+
+    //光源
+    lightShader.use();
+    glm::mat4 lightModel = glm::mat4(1.0f);
+    lightModel = glm::translate(lightModel, lightPos);
+    lightModel = glm::scale(lightModel, glm::vec3(0.2f));
+
+    lightShader.setMat4("model",lightModel);
+    lightShader.setMat4("view",view);
+    lightShader.setMat4("projection",projection);
+
+    //绘制光源正方体
+    glBindVertexArray(lightCubeVAO);
+    glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
+    glBindVertexArray(0);
+
+    //物体对象
+    objShader.use();
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::rotate(model, glm::radians(cubePitch), glm::vec3(1.0f, 0.0f, 0.0f));
+    model = glm::rotate(model, glm::radians(cubeYaw), glm::vec3(0.0f, 1.0f, 0.0f));
+    model = glm::scale(model, glm::vec3(1.0f, 1.0f, 1.0f));
+
+    glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(model)));
+    objShader.setMat4("model",model);
+    objShader.setMat4("view",view);
+    objShader.setMat4("projection",projection);
+    objShader.setMat3("normalMatrix",normalMatrix);
+    objShader.setVec3("cameraPos",camera.Position);
+
+    // 设置 Light 结构体
+    objShader.setVec3("light.position", lightPos);
+    objShader.setVec3("light.ambient",  glm::vec3(0.2f, 0.2f, 0.2f));
+    objShader.setVec3("light.diffuse",  glm::vec3(0.5f, 0.5f, 0.5f)); // 调暗漫反射试一下效果
+    objShader.setVec3("light.specular", glm::vec3(1.0f, 1.0f, 1.0f));
+
+    // 设置 Material 结构体
+    objShader.setInt("material.diffuse", 0);
+    objShader.setInt("material.specular", 1);
+    objShader.setInt("material.emission", 2);
+    objShader.setFloat("material.shininess", 64.0f);
+    objShader.setFloat("time", static_cast<float>(glfwGetTime()));
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, diffuseMap);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, specularMap);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, emissiveMap);
+
+    //绘制物体正方体
+    glBindVertexArray(VAO);
+    glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
+    glBindVertexArray(0);
+
+    // 半透明物体最后绘制，并根据相机距离从远到近排序。
+    std::vector<glm::vec3> sortedWindows = windowsPositions;
+    std::sort(sortedWindows.begin(), sortedWindows.end(), [](const glm::vec3& left, const glm::vec3& right) {
+        return glm::length(camera.Position - left) > glm::length(camera.Position - right);
+    });
+
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE); // 仍做深度测试，但不让透明物体覆盖深度缓冲。
 
-    // -------------------------------------------------------------------------
-    // 5. 按照由远及近（Key 从大到小）的顺序绘制半透明窗户
-    // -------------------------------------------------------------------------
     windowShader.use();
-    glBindVertexArray(windowVAO);
+    windowShader.setMat4("view", view);
+    windowShader.setMat4("projection", projection);
+    windowShader.setInt("windowTexture", 0);
+
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, windowTexture);
+    glBindVertexArray(windowVAO);
 
-    // 使用 rbegin() 到 rend() 倒序遍历 map（从距离最远的窗户开始画）
-    for (auto it = sortedWindows.rbegin(); it != sortedWindows.rend(); ++it) {
-        glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, it->second); // 取出当前窗户的世界坐标
-        windowShader.setMat4("model", model);
-        
+    for (const glm::vec3& position : sortedWindows) {
+        glm::mat4 windowModel = glm::mat4(1.0f);
+        windowModel = glm::translate(windowModel, position);
+        windowShader.setMat4("model", windowModel);
         glDrawArrays(GL_TRIANGLES, 0, 6);
     }
 
-    // -------------------------------------------------------------------------
-    // 6. 还原状态，避免影响下一帧
-    // -------------------------------------------------------------------------
+    glBindVertexArray(0);
+    glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+
+    glfwSwapBuffers(window);
+    glfwPollEvents();
+}
+```
+
+
+
+
+
+## 第十六章.面剔除(Face Culling)
+
+如果把渲染管线比作生产线，之前的“深度测试”是在最后包装阶段检查产品好坏，而“面剔除”则是在**最前端就把根本不需要生产的半成品直接扔掉**。
+
+
+
+#### 1.现实中的直觉：你看不到物体的“背面”
+
+想象你桌上放着一个实心的木质立方体：
+
+- 无论你站在哪个角度看它，你**最多只能同时看到它的 3 个面**。
+- 另外 3 个面向背后的面（背面），完全被立方体自身的正面挡住了。
+
+在 3D 渲染中，一个立方体由 12 个三角形拼成。如果我们把背对相机的 6 个三角形也让片段着色器（Fragment Shader）光栅化、计算光照、采样纹理，**这些计算出来的像素最终又会被深度测试丢弃**，这完全是对 GPU 算力的巨大浪费！
+
+> **面剔除的核心目的**：在三角形刚刚投射到屏幕、准备开始算像素之前，**一瞬间把所有“背对相机”的三角形丢掉**。开启它，GPU 的光栅化和片段着色器工作量直接斩掉将近 **50%**！
+
+
+
+#### 2.GPU 是怎么知道三角形“背对相机”的？
+
+GPU 既不需要做复杂的光线追踪，也不需要计算法线点积。它判断“正反面”的方法高效到令人发指——只看**顶点的缠绕顺序（Winding Order）**。
+
+当你在代码里定义一个三角形的三个顶点时（例如 $A \to B \to C$），它们在屏幕上的投影顺序只有两种可能：顺时针，逆时针。
+
+
+
+假设你在 3D 空间中定义了一个三角形，从**正面**看它，它的三个顶点顺序是 **逆时针（A $\to$ B $\to$ C）**。
+
+现在，**你走到这个三角形的背面去观察它**，猜猜看它的投影顺序变成了什么？
+
+——**它在屏幕上变成了顺时针！**
+
+正是利用这个空间透视几何的物理规律：**OpenGL 默认规定，屏幕上呈现逆时针（CCW）的三角形是正面，呈现顺时针（CW）的三角形是背面。** GPU 只需要看顶点在屏幕上的排列方向，就能在微秒级内判断它是正面还是背面！
+
+
+
+#### 3.核心API
+
+开启/关闭
+
+```c++
+glEnable(GL_CULL_FACE);  // 开启面剔除状态机
+glDisable(GL_CULL_FACE); // 关闭面剔除
+```
+
+
+
+告诉gpu剔除哪一边
+
+```c++
+glCullFace(GL_BACK);          // 剔除背面（最常用！默认值）
+glCullFace(GL_FRONT);         // 剔除正面（只绘制背面，某些特殊阴影算法会用）
+glCullFace(GL_FRONT_AND_BACK);// 正背面全剔除（画面啥都不画）
+```
+
+
+
+改变正面的判定规则（可选）
+
+默认情况下 `GL_CCW`（逆时针）是正面。如果你在使用 DirectX 的模型数据（DirectX 默认 `GL_CW` 顺时针为正面），你可以切换它：
+
+```c++
+glFrontFace(GL_CW);  // 把顺时针定义为正面
+glFrontFace(GL_CCW); // 把逆时针定义为正面（OpenGL 默认）
+```
+
+
+
+#### 4.两个最容易踩到的“面剔除 Bug”
+
+##### 坑 1：模型看起来“镂空”或者“法线反了”
+
+**现象**：开启面剔除后，实心模型的某些面消失了，透过洞能看到模型内部。
+
+**原因**：你在手写顶点数组（VAO/EBO）或者建模软件导出模型时，顶点的**索引顺序画反了**（比如原本该逆时针画的面写成了顺时针）。GPU 误以为正面的面是背面，直接给剔除掉了。
+
+
+
+##### 坑 2：植物、草叶、栅栏转个身就消失了
+
+**现象**：场景里的草叶、花朵或单面墙，从正面看好好的，摄像机绕到背面时突然全不见了。
+
+**原因**：草叶和栅栏通常是**无厚度的单层平面（Single Quad）**。它只有正面没有背面。当你绕到它身后时，GPU 判定该四边形为“背面”，顺手就把它给剔除了！
+
+```c++
+【渲染无厚度物体（草、花、窗户贴图）的标准策略】
+
+// 1. 绘制带有厚度的 3D 实体模型（房子、箱子、角色）
+glEnable(GL_CULL_FACE);
+drawSolidModels();
+
+// 2. 绘制没有厚度的单面物体（草叶、双面图层）时，临时关闭面剔除！
+glDisable(GL_CULL_FACE);
+drawFoliageAndGrass();
+```
+
+
+
+#### 5.总结
+
+手写代码时，你只需要记住**写顶点数据时按照逆时针（CCW）定义**，然后在渲染循环里加上这三行，面剔除就能完美工作：
+
+```c++
+glEnable(GL_CULL_FACE);
+glCullFace(GL_BACK);
+glFrontFace(GL_CCW);
+```
+
+
+
+## 第十七章.帧缓冲区（Framebuffer）与离屏渲染
+
+如果把之前学的所有渲染技术比作在**画板**上画画，那么到目前为止，你的画笔一直只能直接画在“屏幕”（默认帧缓冲区）这块画板上。
+
+而这一章，我们要带你拆掉这块屏幕，给 GPU 装上一张“隐形画板”！
+
+#### 1.帧缓冲区
+
+在 OpenGL 中，**帧缓冲区（FBO）** 就像是一个**隐形画架**。
+
+- **默认帧缓冲区（Default Framebuffer）**：你初始化 GLFW / Qt 窗口时系统自动为你创建的。你在片段着色器中输出的 `FragColor`，最终会直接呈现在电脑显示器上。
+- **自定义帧缓冲区（Custom FBO）**：你自己手动在 GPU 内存里开辟的一块“画板”。你在上面画的任何东西，屏幕上都**完全看不到**！这就叫 **离屏渲染（Off-screen Rendering）**。
+
+离屏渲染画出来的不是死数据，而是一张**存放在 GPU 显存里的纹理贴图（Texture）**。我们可以把这张贴图拿过来，当成输入再喂给下一个着色器。**后处理特效（如夜视仪、黑白电影、模糊、 Bloom 光晕、阴影贴图 Shadow Map）全靠它！**
+
+
+
+#### 2.帧缓冲区的附件(Attachments)
+
+一个空的 FBO 就像是一个**没有装画纸的空画架**，它是不能直接用来绘画的。要想让一个自定义 FBO 生效，你必须给它挂载至少一个**附件（Attachment）**：
+
+```c++
+				+----------------------------------+
+               |    自定义帧缓冲区 (FBO)           |
+               +----------------------------------+
+                               |
+       +-----------------------+-----------------------+
+       |                                               |
+  【颜色附件】                                     【深度/模板附件】
+Color Attachment                               Depth/Stencil Attachment
+ (纹理 Texture)                              (渲染缓冲区 Renderbuffer - RBO)
+       |                                               |
+ 存储最终画出来的颜色                           存储深度 Z-buffer 和 stencil 模板
+（可以当贴图再次采样！）                        （只写不读，极速优化）
+```
+
+
+
+**颜色附件（Color Attachment）**：
+
+- 用 **纹理（Texture）** 来充当。片段着色器算出来的颜色直接画进这张纹理里。
+- **最大优势**：渲染完后，你可以把这张纹理绑定到别的 Shader 里，像普通图片一样去采样它！
+
+
+
+**深度/模板附件（Depth / Stencil Attachment）**：
+
+- 用 **渲染缓冲区对象（Renderbuffer Object - RBO）** 来充当。
+- 专门用来存 `GL_DEPTH_TEST` 的深度值。RBO 是专门为只写不读（Write-Only）优化的显存格式，性能极高。
+
+
+
+#### 3.代码实现
+
+```c++
+// 1. 创建并绑定自定义 Framebuffer
+unsigned int fbo;
+glGenFramebuffers(1, &fbo);
+glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+// 2. 创建一张空的 2D 纹理，作为“颜色附件”挂载到 FBO 上
+unsigned int textureColorBuffer;
+glGenTextures(1, &textureColorBuffer);
+glBindTexture(GL_TEXTURE_2D, textureColorBuffer);
+// 注意：最后一个 NULL 代表现在不传图像数据，只开辟一块跟屏幕一样大的显存空间
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 800, 600, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+// 将纹理挂载到 FBO 的 COLOR_ATTACHMENT0
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textureColorBuffer, 0);
+
+// 3. 创建 RBO 作为“深度和模板附件”挂载到 FBO 上
+unsigned int rbo;
+glGenRenderbuffers(1, &rbo);
+glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 800, 600); // 24位深度 + 8位模板
+glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
+
+// 4. 检查 FBO 是否完整配置成功
+if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
+
+// 记得解绑，切回默认屏幕
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
+```
+
+
+
+渲染循环：
+
+Pass 1：离屏渲染（把 3D 场景画进纹理）
+
+```c++
+// 切换绘制目标为我们的“隐形画板”
+glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+glEnable(GL_DEPTH_TEST);
+
+glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+// 像平常一样正常绘制你的 3D 物体（房子、角色、光源等）
+drawMyComplex3DScene();
+```
+
+
+
+Pass 2：后处理渲染（将纹理贴到一个覆盖全屏的四边形上）
+
+```c++
+// 切回默认屏幕！
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
+glDisable(GL_DEPTH_TEST); // 全屏 2D 贴图不需要深度测试
+
+glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+glClear(GL_COLOR_BUFFER_BIT);
+
+screenShader.use(); // 使用负责滤镜特效的后处理片段着色器
+glBindVertexArray(quadVAO); // 绑定一个正好覆盖整个屏幕的 2D 平面 (Quad)
+
+// 把 Pass 1 离屏渲染得到的纹理绑定供屏幕采样
+glBindTexture(GL_TEXTURE_2D, textureColorBuffer); 
+glDrawArrays(GL_TRIANGLES, 0, 6); // 绘制全屏四边形
+```
+
+
+
+实现一个“反色 / 夜视仪”滤镜：
+
+```c++
+#version 330 core
+out vec4 FragColor;
+in vec2 TexCoords;
+
+uniform sampler2D screenTexture; // 离屏渲染存好的场景贴图
+
+void main() {
+    vec3 col = texture(screenTexture, TexCoords).rgb;
+    
+    // 效果 1：反色滤镜（Inversion）
+    FragColor = vec4(1.0 - col, 1.0);
+    
+    // 效果 2：黑白电影滤镜（Grayscale）
+    // float average = 0.2126 * col.r + 0.7152 * col.g + 0.0722 * col.b;
+    // FragColor = vec4(vec3(average), 1.0);
 }
 ```
 

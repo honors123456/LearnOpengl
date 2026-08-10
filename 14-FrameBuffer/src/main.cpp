@@ -113,7 +113,7 @@ int main(){
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // 创建窗口，后续所有 OpenGL 绘制都会输出到这个窗口。
-    GLFWwindow* window=glfwCreateWindow(800,600,"Cube",nullptr,nullptr);
+    GLFWwindow* window=glfwCreateWindow(800,600,"FrameBuffer",nullptr,nullptr);
     if(window == nullptr)
     {
         std::cout << "Failed to create window" << std::endl;
@@ -211,40 +211,6 @@ int main(){
     glGenerateMipmap(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    //窗户纹理
-    // 窗户纹理必须保留 Alpha 通道，片段着色器会直接使用它参与混合。
-    cv::Mat windowImage = cv::imread(TEXTURE_FILE4, cv::IMREAD_UNCHANGED);
-    if (windowImage.empty()) {
-        std::cerr << "Failed to load texture: " << TEXTURE_FILE4 << std::endl;
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-
-    cv::flip(windowImage, windowImage, 0);
-    if (windowImage.channels() == 4) {
-        cv::cvtColor(windowImage, windowImage, cv::COLOR_BGRA2RGBA);
-    } else if (windowImage.channels() == 3) {
-        cv::cvtColor(windowImage, windowImage, cv::COLOR_BGR2RGBA);
-    } else {
-        std::cerr << "Unsupported window texture channel count: " << windowImage.channels() << std::endl;
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-
-    GLuint windowTexture = 0;
-    glGenTextures(1, &windowTexture);
-    glBindTexture(GL_TEXTURE_2D, windowTexture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, windowImage.cols, windowImage.rows,
-                 0, GL_RGBA, GL_UNSIGNED_BYTE, windowImage.data);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
     //放射贴图 (Emission Map)
     cv::Mat emissiveImage = cv::imread(TEXTURE_FILE3, cv::IMREAD_UNCHANGED);
     if (emissiveImage.empty()) {
@@ -293,8 +259,8 @@ int main(){
     //光源着色器
     Shader lightShader(SHADER_DIR "/lightShader.vert", SHADER_DIR "/lightShader.frag");
 
-    //半透明窗户着色器
-    Shader windowShader(SHADER_DIR "/windowShader.vert", SHADER_DIR "/windowShader.frag");
+    //滤镜着色器
+    Shader filterShader(SHADER_DIR "/filterShader.vert", SHADER_DIR "/filterShader.frag");
 
     // 物体顶点数据：每个顶点依次包含位置、法线和纹理坐标。
     float vertices[] = {
@@ -389,30 +355,63 @@ int main(){
     glEnableVertexAttribArray(0);
     glBindVertexArray(0);
 
-    // 3 个窗户共用一个竖直平面，顶点包含位置和纹理坐标。
-    float windowVertices[] = {
-        // position              // texture coordinates
-        -0.5f,  0.75f, 0.0f,     0.0f, 1.0f,
-        -0.5f, -0.75f, 0.0f,     0.0f, 0.0f,
-         0.5f, -0.75f, 0.0f,     1.0f, 0.0f,
+    // 全屏四边形：每个顶点包含屏幕位置和纹理坐标。
+    float quadVertices[] = {
+        // position    // texture
+        -1.0f,  1.0f,  0.0f, 1.0f,
+         1.0f,  1.0f,  1.0f, 1.0f,
+         1.0f, -1.0f,  1.0f, 0.0f,
 
-        -0.5f,  0.75f, 0.0f,     0.0f, 1.0f,
-         0.5f, -0.75f, 0.0f,     1.0f, 0.0f,
-         0.5f,  0.75f, 0.0f,     1.0f, 1.0f
+         1.0f, -1.0f,  1.0f, 0.0f,
+        -1.0f, -1.0f,  0.0f, 0.0f,
+        -1.0f,  1.0f,  0.0f, 1.0f
     };
 
-    GLuint windowVAO = 0;
-    GLuint windowVBO = 0;
-    glGenVertexArrays(1, &windowVAO);
-    glGenBuffers(1, &windowVBO);
-    glBindVertexArray(windowVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, windowVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(windowVertices), windowVertices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    unsigned int quadVAO,quadVBO;
+    glGenVertexArrays(1,&quadVAO);
+    glBindVertexArray(quadVAO);
+
+    glGenBuffers(1,&quadVBO);
+    glBindBuffer(GL_ARRAY_BUFFER,quadVBO);
+    glBufferData(GL_ARRAY_BUFFER,sizeof(quadVertices),quadVertices,GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
+
+    //1.创建并绑定帧缓冲区
+    GLuint FBO;
+    glGenFramebuffers(1,&FBO);
+    glBindFramebuffer(GL_FRAMEBUFFER,FBO);
+
+    //2.创建空的2D纹理(颜色附件)
+    GLuint textureColorBuffer;
+    glGenTextures(1,&textureColorBuffer);
+    glBindTexture(GL_TEXTURE_2D,textureColorBuffer);
+    //注意: 最后一个 NULL 代表现在不传图像数据，只开辟一块跟屏幕一样大的显存空间
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 800, 600, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // 将纹理挂载到 FBO 的 COLOR_ATTACHMENT0
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textureColorBuffer, 0);
+
+    //3.创建RBO(深度和模板附件)
+    GLuint RBO;
+    glGenRenderbuffers(1, &RBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, RBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 800, 600); // 24位深度 + 8位模板
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, RBO);   
+
+    //4.检查FBO是否完整配置成功
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
+
+    
+
+    //解绑帧缓冲区
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     glfwSetCursorPosCallback(window, mouse_callback);
     glfwSetMouseButtonCallback(window, mouse_button_callback);
@@ -425,19 +424,15 @@ int main(){
     //定义光源位置
     glm::vec3 lightPos(1.0f, 1.0f, 2.0f);     // 光源在世界空间中的坐标
 
-    // 假设场景里有 3 块玻璃窗户的位置
-    std::vector<glm::vec3> windowsPositions {
-        glm::vec3(-1.5f, 0.0f, -0.48f),
-        glm::vec3( 1.5f, 0.0f,  0.51f),
-        glm::vec3( 0.0f, 0.0f,  0.7f)
-    };
-
     lastFrame = static_cast<float>(glfwGetTime());
     while(!glfwWindowShouldClose(window))
     {
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
+
+        //pass 1 离屏渲染 (把 3D 场景画进纹理)
+        glBindFramebuffer(GL_FRAMEBUFFER, FBO);
 
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -508,33 +503,22 @@ int main(){
         glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
         glBindVertexArray(0);
 
-        // 半透明物体最后绘制，并根据相机距离从远到近排序。
-        std::vector<glm::vec3> sortedWindows = windowsPositions;
-        std::sort(sortedWindows.begin(), sortedWindows.end(), [](const glm::vec3& left, const glm::vec3& right) {
-            return glm::length(camera.Position - left) > glm::length(camera.Position - right);
-        });
+        //Pass 2：后处理渲染（将纹理贴到一个覆盖全屏的四边形上）
+        glBindFramebuffer(GL_FRAMEBUFFER,0);
+        glDisable(GL_DEPTH_TEST);   //全屏2d贴图不需要深度测试
 
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glDepthMask(GL_FALSE); // 仍做深度测试，但不让透明物体覆盖深度缓冲。
+        glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
 
-        windowShader.use();
-        windowShader.setMat4("view", view);
-        windowShader.setMat4("projection", projection);
-        windowShader.setInt("windowTexture", 0);
+        filterShader.use();
+        filterShader.setInt("screenTexture", 3);
 
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, windowTexture);
-        glBindVertexArray(windowVAO);
-
-        for (const glm::vec3& position : sortedWindows) {
-            glm::mat4 windowModel = glm::mat4(1.0f);
-            windowModel = glm::translate(windowModel, position);
-            windowShader.setMat4("model", windowModel);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
-        }
-
+        glBindVertexArray(quadVAO);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, textureColorBuffer); 
+        glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
+
         glDepthMask(GL_TRUE);
         glDisable(GL_BLEND);
 
@@ -544,13 +528,16 @@ int main(){
 
     glDeleteVertexArrays(1, &VAO);
     glDeleteVertexArrays(1, &lightCubeVAO);
-    glDeleteVertexArrays(1, &windowVAO);
+    glDeleteVertexArrays(1, &quadVAO);
     glDeleteBuffers(1, &VBO);
     glDeleteBuffers(1, &EBO);
-    glDeleteBuffers(1, &windowVBO);
+    glDeleteBuffers(1, &quadVBO);
     glDeleteTextures(1, &diffuseMap);
     glDeleteTextures(1, &specularMap);
-    glDeleteTextures(1, &windowTexture);
+    glDeleteTextures(1, &emissiveMap);
+    glDeleteTextures(1, &textureColorBuffer);
+    glDeleteRenderbuffers(1, &RBO);
+    glDeleteFramebuffers(1, &FBO);
     }
 
     glfwDestroyWindow(window);
