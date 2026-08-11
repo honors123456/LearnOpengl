@@ -14,7 +14,7 @@ Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
 float lastX = 800.0f / 2.0f;
 float lastY = 600.0f / 2.0f;
 bool firstMouse = true;
-bool draggingCube = false;
+bool draggingCamera = false;
 float cubeYaw = 20.0f;
 float cubePitch = 20.0f;
 int framebufferWidth = 800;
@@ -31,11 +31,11 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
 }
 
-// 1. 鼠标移动回调函数：只有按住鼠标左键时，才用拖动距离旋转正方体。
+// 1. 鼠标移动回调函数：只有按住鼠标左键时，才用拖动距离旋转相机视角。
 void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
     (void)window;
 
-    if (!draggingCube) {
+    if (!draggingCamera) {
         firstMouse = true;
         return;
     }
@@ -55,8 +55,7 @@ void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
     lastX = xpos;
     lastY = ypos;
 
-    cubeYaw -= xoffset * 0.2f;
-    cubePitch -= yoffset * 0.2f;
+    camera.ProcessMouseMovement(xoffset, yoffset);
 }
 
 // 2. 鼠标按键回调函数：左键按下开始拖动，松开停止拖动。
@@ -69,10 +68,10 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
     }
 
     if (action == GLFW_PRESS) {
-        draggingCube = true;
+        draggingCamera = true;
         firstMouse = true;
     } else if (action == GLFW_RELEASE) {
-        draggingCube = false;
+        draggingCamera = false;
         firstMouse = true;
     }
 }
@@ -113,7 +112,7 @@ int main(){
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // 创建窗口，后续所有 OpenGL 绘制都会输出到这个窗口。
-    GLFWwindow* window=glfwCreateWindow(800,600,"FrameBuffer",nullptr,nullptr);
+    GLFWwindow* window=glfwCreateWindow(800,600,"Cubemap",nullptr,nullptr);
     if(window == nullptr)
     {
         std::cout << "Failed to create window" << std::endl;
@@ -211,56 +210,23 @@ int main(){
     glGenerateMipmap(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    //放射贴图 (Emission Map)
-    cv::Mat emissiveImage = cv::imread(TEXTURE_FILE3, cv::IMREAD_UNCHANGED);
-    if (emissiveImage.empty()) {
-        std::cerr << "Failed to load texture: " << TEXTURE_FILE3 << std::endl;
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-
-    // OpenGL 的纹理原点位于左下角，因此先将 OpenCV 图像垂直翻转。
-    cv::flip(emissiveImage, emissiveImage, 0);
-    if (emissiveImage.channels() == 4) {
-        cv::cvtColor(emissiveImage, emissiveImage, cv::COLOR_BGRA2RGBA);
-    } else if (emissiveImage.channels() == 3) {
-        cv::cvtColor(emissiveImage, emissiveImage, cv::COLOR_BGR2RGB);
-    } else if (emissiveImage.channels() == 1) {
-        cv::cvtColor(emissiveImage, emissiveImage, cv::COLOR_GRAY2RGB);
-    } else {
-        std::cerr << "Unsupported texture channel count: " << emissiveImage.channels() << std::endl;
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-    //放射纹理数据上传gpu
-    GLuint emissiveMap = 0;
-    glGenTextures(1, &emissiveMap);
-    glBindTexture(GL_TEXTURE_2D, emissiveMap);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
-                 emissiveImage.cols, emissiveImage.rows, 0, GL_RGB,
-                 GL_UNSIGNED_BYTE, emissiveImage.data);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, 0);
 
     {
 
     //物体着色器
     Shader objShader(SHADER_DIR "/objectShader.vert", SHADER_DIR "/objectShader.frag");
 
-    //光源着色器
-    Shader lightShader(SHADER_DIR "/lightShader.vert", SHADER_DIR "/lightShader.frag");
+    //天空盒着色器
+    Shader skyShader(SHADER_DIR "/skyBoxShader.vert", SHADER_DIR "/skyBoxShader.frag");
 
-    //滤镜着色器
-    Shader filterShader(SHADER_DIR "/filterShader.vert", SHADER_DIR "/filterShader.frag");
+    objShader.use();
+    objShader.setInt("material.diffuse", 0);
+    objShader.setInt("material.specular", 1);
+    objShader.setInt("skybox", 2);
+
+    skyShader.use();
+    skyShader.setInt("skybox", 0);
 
     // 物体顶点数据：每个顶点依次包含位置、法线和纹理坐标。
     float vertices[] = {
@@ -312,7 +278,6 @@ int main(){
     };
     const GLsizei indexCount = static_cast<GLsizei>(sizeof(objIndices) / sizeof(objIndices[0]));
 
-
     GLuint VAO,VBO,EBO;
 
     // VAO 记录顶点属性格式，以及当前绑定的 EBO。
@@ -342,76 +307,109 @@ int main(){
     // 解绑 VAO，避免后续误改它记录的状态。
     glBindVertexArray(0);
 
-    //光源
-    //灯泡物体的 VAO (复用同一个 VBO 的顶点位置即可)
-    unsigned int lightCubeVAO;
-    glGenVertexArrays(1, &lightCubeVAO);
-    glBindVertexArray(lightCubeVAO);
+    //天空盒顶点属性
+    float skyboxVertices[] = {
+        -1.0f,  1.0f, -1.0f,
+        -1.0f, -1.0f, -1.0f,
+         1.0f, -1.0f, -1.0f,
+         1.0f, -1.0f, -1.0f,
+         1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
 
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,EBO);
-    // 灯泡只需要位置属性，不需要法线
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+        -1.0f, -1.0f,  1.0f,
+        -1.0f, -1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,
+
+         1.0f, -1.0f, -1.0f,
+         1.0f, -1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f, -1.0f,
+         1.0f, -1.0f, -1.0f,
+
+        -1.0f, -1.0f,  1.0f,
+        -1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,
+         1.0f, -1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,
+
+        -1.0f,  1.0f, -1.0f,
+         1.0f,  1.0f, -1.0f,
+         1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,
+        -1.0f,  1.0f,  1.0f,
+        -1.0f,  1.0f, -1.0f,
+
+        -1.0f, -1.0f, -1.0f,
+        -1.0f, -1.0f,  1.0f,
+         1.0f, -1.0f, -1.0f,
+         1.0f, -1.0f, -1.0f,
+        -1.0f, -1.0f,  1.0f,
+         1.0f, -1.0f,  1.0f
+    };
+    const GLsizei skyboxVertexCount = static_cast<GLsizei>(sizeof(skyboxVertices) / (3 * sizeof(float)));
+
+    //天空盒顶点数据
+    GLuint skyboxVAO, skyboxVBO;
+    glGenVertexArrays(1, &skyboxVAO);
+    glGenBuffers(1, &skyboxVBO);
+    glBindVertexArray(skyboxVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, skyboxVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), skyboxVertices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
     glBindVertexArray(0);
 
-    // 全屏四边形：每个顶点包含屏幕位置和纹理坐标。
-    float quadVertices[] = {
-        // position    // texture
-        -1.0f,  1.0f,  0.0f, 1.0f,
-         1.0f,  1.0f,  1.0f, 1.0f,
-         1.0f, -1.0f,  1.0f, 0.0f,
-
-         1.0f, -1.0f,  1.0f, 0.0f,
-        -1.0f, -1.0f,  0.0f, 0.0f,
-        -1.0f,  1.0f,  0.0f, 1.0f
+    //天空盒纹理（全屏3D效果，类似于3D虚拟厅）
+    std::vector<std::string> skyFaces
+    {
+        SKYBOX_DIR "/right.jpg",
+        SKYBOX_DIR "/left.jpg",
+        SKYBOX_DIR "/top.jpg",
+        SKYBOX_DIR "/bottom.jpg",
+        SKYBOX_DIR "/front.jpg",
+        SKYBOX_DIR "/back.jpg"
     };
 
-    unsigned int quadVAO,quadVBO;
-    glGenVertexArrays(1,&quadVAO);
-    glBindVertexArray(quadVAO);
+    unsigned int skyTexture;
+    glGenTextures(1,&skyTexture);
+    glBindTexture(GL_TEXTURE_CUBE_MAP,skyTexture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    for(int i = 0; i < static_cast<int>(skyFaces.size()); i++)
+    {
+        cv::Mat image = cv::imread(skyFaces[i],cv::IMREAD_UNCHANGED);
+        if(image.empty())
+        {
+            std::cerr<<" read image failed! with "<<skyFaces[i]<<std::endl;
+            return -1;
+        }
 
-    glGenBuffers(1,&quadVBO);
-    glBindBuffer(GL_ARRAY_BUFFER,quadVBO);
-    glBufferData(GL_ARRAY_BUFFER,sizeof(quadVertices),quadVertices,GL_STATIC_DRAW);
+        if (image.channels() == 4) {
+            cv::cvtColor(image, image, cv::COLOR_BGRA2RGBA);
+        } else if (image.channels() == 3) {
+            cv::cvtColor(image, image, cv::COLOR_BGR2RGB);
+        } else if (image.channels() == 1) {
+            cv::cvtColor(image, image, cv::COLOR_GRAY2RGB);
+        } else {
+            std::cerr << "Unsupported skybox channel count: " << image.channels()
+                      << " with " << skyFaces[i] << std::endl;
+            return -1;
+        }
 
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    glBindVertexArray(0);
+        GLenum format = image.channels() == 4 ? GL_RGBA : GL_RGB;
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, static_cast<GLint>(format),
+                     image.cols, image.rows, 0, format, GL_UNSIGNED_BYTE, image.data);
+    }
 
-    //1.创建并绑定帧缓冲区
-    GLuint FBO;
-    glGenFramebuffers(1,&FBO);
-    glBindFramebuffer(GL_FRAMEBUFFER,FBO);
-
-    //2.创建空的2D纹理(颜色附件)
-    GLuint textureColorBuffer;
-    glGenTextures(1,&textureColorBuffer);
-    glBindTexture(GL_TEXTURE_2D,textureColorBuffer);
-    //注意: 最后一个 NULL 代表现在不传图像数据，只开辟一块跟屏幕一样大的显存空间
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 800, 600, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    // 将纹理挂载到 FBO 的 COLOR_ATTACHMENT0
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textureColorBuffer, 0);
-
-    //3.创建RBO(深度和模板附件)
-    GLuint RBO;
-    glGenRenderbuffers(1, &RBO);
-    glBindRenderbuffer(GL_RENDERBUFFER, RBO);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 800, 600); // 24位深度 + 8位模板
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, RBO);   
-
-    //4.检查FBO是否完整配置成功
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-        std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
-
-    
-
-    //解绑帧缓冲区
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE); // 3D 纹理第 3 维坐标 R
 
     glfwSetCursorPosCallback(window, mouse_callback);
     glfwSetMouseButtonCallback(window, mouse_button_callback);
@@ -419,7 +417,6 @@ int main(){
     glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
     glViewport(0, 0, framebufferWidth, framebufferHeight);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-    glEnable(GL_DEPTH_TEST);
 
     //定义光源位置
     glm::vec3 lightPos(1.0f, 1.0f, 2.0f);     // 光源在世界空间中的坐标
@@ -431,14 +428,13 @@ int main(){
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
-        //pass 1 离屏渲染 (把 3D 场景画进纹理)
-        glBindFramebuffer(GL_FRAMEBUFFER, FBO);
-
+        //1.正常渲染场景中的3D 实体模型
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        //当执行深度清屏时，OpenGL 默认会把深度缓冲区（Depth Buffer）里全屏每一个像素的值全部填满为 1.0（代表目前没有任何东西，全是最远距离）。
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glEnable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
+        glDepthFunc(GL_LESS);
 
         processInput(window);
 
@@ -448,21 +444,6 @@ int main(){
             ? static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight)
             : 1.0f;
         glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), aspect, 0.1f, 100.0f);
-
-        //光源
-        lightShader.use();
-        glm::mat4 lightModel = glm::mat4(1.0f);
-        lightModel = glm::translate(lightModel, lightPos);
-        lightModel = glm::scale(lightModel, glm::vec3(0.2f));
-
-        lightShader.setMat4("model",lightModel);
-        lightShader.setMat4("view",view);
-        lightShader.setMat4("projection",projection);
-
-        //绘制光源正方体
-        glBindVertexArray(lightCubeVAO);
-        glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
-        glBindVertexArray(0);
 
         //物体对象
         objShader.use();
@@ -487,58 +468,48 @@ int main(){
         // 设置 Material 结构体
         objShader.setInt("material.diffuse", 0);
         objShader.setInt("material.specular", 1);
-        objShader.setInt("material.emission", 2);
         objShader.setFloat("material.shininess", 64.0f);
-        objShader.setFloat("time", static_cast<float>(glfwGetTime()));
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, diffuseMap);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, specularMap);
         glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, emissiveMap);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, skyTexture);
 
         //绘制物体正方体
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
         glBindVertexArray(0);
 
-        //Pass 2：后处理渲染（将纹理贴到一个覆盖全屏的四边形上）
-        glBindFramebuffer(GL_FRAMEBUFFER,0);
-        glDisable(GL_DEPTH_TEST);   //全屏2d贴图不需要深度测试
+        //2.渲染天空盒
+        //修改深度测试条件：允许深度等于 1.0 的片段通过（因为默认清屏深度是 1.0）
+        glDepthFunc(GL_LEQUAL);
+        skyShader.use();
+        skyShader.setMat4("view", view);
+        skyShader.setMat4("projection", projection);
 
-        glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-
-        glActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_2D, textureColorBuffer); 
-
-        filterShader.use();
-        filterShader.setInt("screenTexture", 3);
-
-        glBindVertexArray(quadVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(skyboxVAO);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, skyTexture);
+        glDrawArrays(GL_TRIANGLES, 0, skyboxVertexCount);
         glBindVertexArray(0);
 
-        glDepthMask(GL_TRUE);
-        glDisable(GL_BLEND);
+        //恢复默认深度测试比较条件
+        glDepthFunc(GL_LESS);
 
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
     glDeleteVertexArrays(1, &VAO);
-    glDeleteVertexArrays(1, &lightCubeVAO);
-    glDeleteVertexArrays(1, &quadVAO);
+    glDeleteVertexArrays(1, &skyboxVAO);
     glDeleteBuffers(1, &VBO);
     glDeleteBuffers(1, &EBO);
-    glDeleteBuffers(1, &quadVBO);
+    glDeleteBuffers(1, &skyboxVBO);
     glDeleteTextures(1, &diffuseMap);
     glDeleteTextures(1, &specularMap);
-    glDeleteTextures(1, &emissiveMap);
-    glDeleteTextures(1, &textureColorBuffer);
-    glDeleteRenderbuffers(1, &RBO);
-    glDeleteFramebuffers(1, &FBO);
+    glDeleteTextures(1, &skyTexture);
     }
 
     glfwDestroyWindow(window);

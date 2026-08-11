@@ -1,4 +1,14 @@
 {
     "cmake.sourceDirectory": "${workspaceFolder}",
-    "cmake.buildDirectory": "${workspaceFolder}/build"
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "C_Cpp.intelliSenseEngine": "default",
+    "C_Cpp.autocomplete": "default",
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/External/include",
+        "${workspaceFolder}/**",
+        "E:/opencv/build/include"
+    ],
+    "C_Cpp.default.forcedInclude": [
+        "${workspaceFolder}/External/include/glad/glad.h"
+    ]
 }

@@ -4109,78 +4109,6 @@ Color Attachment                               Depth/Stencil Attachment
 
 #### 3.代码实现
 
-```c++
-// 1. 创建并绑定自定义 Framebuffer
-unsigned int fbo;
-glGenFramebuffers(1, &fbo);
-glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-
-// 2. 创建一张空的 2D 纹理，作为“颜色附件”挂载到 FBO 上
-unsigned int textureColorBuffer;
-glGenTextures(1, &textureColorBuffer);
-glBindTexture(GL_TEXTURE_2D, textureColorBuffer);
-// 注意：最后一个 NULL 代表现在不传图像数据，只开辟一块跟屏幕一样大的显存空间
-glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 800, 600, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-// 将纹理挂载到 FBO 的 COLOR_ATTACHMENT0
-glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textureColorBuffer, 0);
-
-// 3. 创建 RBO 作为“深度和模板附件”挂载到 FBO 上
-unsigned int rbo;
-glGenRenderbuffers(1, &rbo);
-glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 800, 600); // 24位深度 + 8位模板
-glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
-
-// 4. 检查 FBO 是否完整配置成功
-if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-    std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
-
-// 记得解绑，切回默认屏幕
-glBindFramebuffer(GL_FRAMEBUFFER, 0);
-```
-
-
-
-渲染循环：
-
-Pass 1：离屏渲染（把 3D 场景画进纹理）
-
-```c++
-// 切换绘制目标为我们的“隐形画板”
-glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-glEnable(GL_DEPTH_TEST);
-
-glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-// 像平常一样正常绘制你的 3D 物体（房子、角色、光源等）
-drawMyComplex3DScene();
-```
-
-
-
-Pass 2：后处理渲染（将纹理贴到一个覆盖全屏的四边形上）
-
-```c++
-// 切回默认屏幕！
-glBindFramebuffer(GL_FRAMEBUFFER, 0);
-glDisable(GL_DEPTH_TEST); // 全屏 2D 贴图不需要深度测试
-
-glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
-glClear(GL_COLOR_BUFFER_BIT);
-
-screenShader.use(); // 使用负责滤镜特效的后处理片段着色器
-glBindVertexArray(quadVAO); // 绑定一个正好覆盖整个屏幕的 2D 平面 (Quad)
-
-// 把 Pass 1 离屏渲染得到的纹理绑定供屏幕采样
-glBindTexture(GL_TEXTURE_2D, textureColorBuffer); 
-glDrawArrays(GL_TRIANGLES, 0, 6); // 绘制全屏四边形
-```
-
-
-
 实现一个“反色 / 夜视仪”滤镜：
 
 ```c++
@@ -4202,3 +4130,714 @@ void main() {
 }
 ```
 
+
+
+滤镜着色器
+
+```c++
+//滤镜着色器
+Shader filterShader(SHADER_DIR "/filterShader.vert", SHADER_DIR "/filterShader.frag");
+```
+
+
+
+滤镜顶点数据
+
+```c++
+// 全屏四边形：每个顶点包含屏幕位置和纹理坐标。
+float quadVertices[] = {
+    // position    // texture
+    -1.0f,  1.0f,  0.0f, 1.0f,
+    1.0f,  1.0f,  1.0f, 1.0f,
+    1.0f, -1.0f,  1.0f, 0.0f,
+
+    1.0f, -1.0f,  1.0f, 0.0f,
+    -1.0f, -1.0f,  0.0f, 0.0f,
+    -1.0f,  1.0f,  0.0f, 1.0f
+};
+
+unsigned int quadVAO,quadVBO;
+glGenVertexArrays(1,&quadVAO);
+glBindVertexArray(quadVAO);
+
+glGenBuffers(1,&quadVBO);
+glBindBuffer(GL_ARRAY_BUFFER,quadVBO);
+glBufferData(GL_ARRAY_BUFFER,sizeof(quadVertices),quadVertices,GL_STATIC_DRAW);
+
+glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+glEnableVertexAttribArray(0);
+glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+glEnableVertexAttribArray(1);
+glBindVertexArray(0);
+
+//1.创建并绑定帧缓冲区
+GLuint FBO;
+glGenFramebuffers(1,&FBO);
+glBindFramebuffer(GL_FRAMEBUFFER,FBO);
+
+//2.创建空的2D纹理(颜色附件)
+GLuint textureColorBuffer;
+glGenTextures(1,&textureColorBuffer);
+glBindTexture(GL_TEXTURE_2D,textureColorBuffer);
+//注意: 最后一个 NULL 代表现在不传图像数据，只开辟一块跟屏幕一样大的显存空间
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 800, 600, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+// 将纹理挂载到 FBO 的 COLOR_ATTACHMENT0
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textureColorBuffer, 0);
+
+//3.创建RBO(深度和模板附件)
+GLuint RBO;
+glGenRenderbuffers(1, &RBO);
+glBindRenderbuffer(GL_RENDERBUFFER, RBO);
+glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 800, 600); // 24位深度 + 8位模板
+glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, RBO);   
+
+//4.检查FBO是否完整配置成功
+if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
+
+//解绑帧缓冲区
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
+```
+
+
+
+渲染循环
+
+```c++
+while(!glfwWindowShouldClose(window))
+{
+    float currentFrame = static_cast<float>(glfwGetTime());
+    deltaTime = currentFrame - lastFrame;
+    lastFrame = currentFrame;
+
+    //pass 1 离屏渲染 (在帧缓冲区中绘制目标场景)
+    glBindFramebuffer(GL_FRAMEBUFFER, FBO);
+
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+
+    processInput(window);
+
+    //两个物体都是同一个摄像机，同一个窗口进行观察，所以共用view和projection
+    glm::mat4 view = camera.GetViewMatrix();
+    float aspect = framebufferHeight > 0
+        ? static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight)
+        : 1.0f;
+    glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), aspect, 0.1f, 100.0f);
+
+    //光源
+    lightShader.use();
+    glm::mat4 lightModel = glm::mat4(1.0f);
+    lightModel = glm::translate(lightModel, lightPos);
+    lightModel = glm::scale(lightModel, glm::vec3(0.2f));
+
+    lightShader.setMat4("model",lightModel);
+    lightShader.setMat4("view",view);
+    lightShader.setMat4("projection",projection);
+
+    //绘制光源正方体
+    glBindVertexArray(lightCubeVAO);
+    glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
+    glBindVertexArray(0);
+
+    //物体对象
+    objShader.use();
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::rotate(model, glm::radians(cubePitch), glm::vec3(1.0f, 0.0f, 0.0f));
+    model = glm::rotate(model, glm::radians(cubeYaw), glm::vec3(0.0f, 1.0f, 0.0f));
+    model = glm::scale(model, glm::vec3(1.0f, 1.0f, 1.0f));
+
+    glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(model)));
+    objShader.setMat4("model",model);
+    objShader.setMat4("view",view);
+    objShader.setMat4("projection",projection);
+    objShader.setMat3("normalMatrix",normalMatrix);
+    objShader.setVec3("cameraPos",camera.Position);
+
+    // 设置 Light 结构体
+    objShader.setVec3("light.position", lightPos);
+    objShader.setVec3("light.ambient",  glm::vec3(0.2f, 0.2f, 0.2f));
+    objShader.setVec3("light.diffuse",  glm::vec3(0.5f, 0.5f, 0.5f)); // 调暗漫反射试一下效果
+    objShader.setVec3("light.specular", glm::vec3(1.0f, 1.0f, 1.0f));
+
+    // 设置 Material 结构体
+    objShader.setInt("material.diffuse", 0);
+    objShader.setInt("material.specular", 1);
+    objShader.setInt("material.emission", 2);
+    objShader.setFloat("material.shininess", 64.0f);
+    objShader.setFloat("time", static_cast<float>(glfwGetTime()));
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, diffuseMap);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, specularMap);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, emissiveMap);
+
+    //绘制物体正方体
+    glBindVertexArray(VAO);
+    glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
+    glBindVertexArray(0);
+
+    //Pass 2：后处理渲染（关闭帧缓冲区绘制，在当前缓冲区绘制滤镜）
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    glDisable(GL_DEPTH_TEST);   //全屏2d贴图不需要深度测试
+
+    glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    //启用帧缓冲区的颜色附件，此时上面的绘制内容全在纹理中，类似于Qt中的QPainter(&QImage),在图片中绘制，然后再贴图
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, textureColorBuffer); 
+    
+    filterShader.use();
+    filterShader.setInt("screenTexture", 3);
+
+    glBindVertexArray(quadVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+
+    glfwSwapBuffers(window);
+    glfwPollEvents();
+}
+```
+
+
+
+
+
+## 第十八章.立方体贴图和天空盒
+
+#### 1.立方体贴图（Cubemap）
+
+想象你拿了一个正方体盒子，把它套在你的头上。盒子的 6 个内表面（前、后、左、右、上、下）分别贴着一张全景相机的照片。当你转头看时，你就会感觉自己置身于一个真实的 3D 世界中——这就是**天空盒（Skybox）**。
+
+在 OpenGL 中，立方体贴图是一种特殊的纹理类型（`GL_TEXTURE_CUBE_MAP`）。它由 **6 张独立的 2D 纹理** 组合而成，分别对应立方体的 6 个面。
+
+```c++
+				+----------+
+                  |  Top (+Y)|
+       +----------+----------+----------+----------+
+       | Left (-X)| Front(+Z)|Right (+X)| Back (-Z)|
+       +----------+----------+----------+----------+
+                  |Bottom(-Y)|
+                  +----------+
+```
+
+
+
+##### 采样机制的超酷改变：
+
+普通的 2D 纹理使用 $(u, v)$ 坐标（取值 0 到 1）来采样像素。
+
+而 Cubemap 完全不同！它使用一个 **3D 方向向量 $(x, y, z)$** 来采样。
+
+> 💡 **原理**：想象立方体的中心是 $(0, 0, 0)$，你从中心发射一条**射线**指向方向 $(x, y, z)$。这条射线穿过立方体盒子哪个面的哪个像素，GPU 就会采样那个像素的值返回给你！
+
+
+
+#### 2.在c++中加载Cubemap
+
+加载 Cubemap 需要依次将 6 张图片的像素数据绑定到 `GL_TEXTURE_CUBE_MAP_POSITIVE_X` 到 `GL_TEXTURE_CUBE_MAP_NEGATIVE_Z` 这 6 个连续的枚举值上：
+
+```c++
+#include <glad/glad.h>
+#include <vector>
+#include <string>
+#include <iostream>
+#include "stb_image.h" // 常用图像加载库
+
+unsigned int loadCubemap(std::vector<std::string> faces) {
+    unsigned int textureID;
+    glGenTextures(1, &textureID);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
+
+    int width, height, nrChannels;
+    for (unsigned int i = 0; i < faces.size(); i++) {
+        // 加载图片
+        unsigned char *data = stbi_load(faces[i].c_str(), &width, &height, &nrChannels, 0);
+        if (data) {
+            // GL_TEXTURE_CUBE_MAP_POSITIVE_X + i 会按顺序遍历 6 个面：
+            // Right(+X), Left(-X), Top(+Y), Bottom(-Y), Front(+Z), Back(-Z)
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 
+                         0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+            stbi_image_free(data);
+        } else {
+            std::cout << "Cubemap tex failed to load at path: " << faces[i] << std::endl;
+            stbi_image_free(data);
+        }
+    }
+
+    // 设置环绕与过滤方式
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE); // 3D 纹理第 3 维坐标 R
+
+    return textureID;
+}
+```
+
+
+
+#### 3.天空盒(SkyBox)的着色器
+
+vertex shader:
+
+```glsl
+#version 330 core
+layout (location = 0) in vec3 aPos;
+
+out vec3 TexCoords; // 输出 3D 向量作为纹理采样坐标
+
+uniform mat4 projection;
+uniform mat4 view;
+
+void main() {
+    TexCoords = aPos; // 顶点的 3D 位置向量直接作为 Cubemap 的采样方向！
+    
+    // 技巧 1：移除 View 矩阵中的位移成分（只保留旋转），让天空盒永远跟着相机走！
+    mat4 viewNoTranslation = mat4(mat3(view));
+    
+    vec4 pos = projection * viewNoTranslation * vec4(aPos, 1.0);
+    
+    // 技巧 2：将 gl_Position 的 z 分量设为 w，透视除法后 z/w = 1.0，强制让天空盒深度为最大值 (1.0)，确保它永远被场景中其他物体遮挡
+   	// 为了保证天空盒永远在最远端,将z分量设置为w, 经过透视除法 z/w = 1.0后，标准化后z为1.0
+    gl_Position = pos.xyww;
+}
+```
+
+
+
+fragment shader:
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+
+in vec3 TexCoords;
+
+uniform samplerCube skybox; // 特殊采样器：samplerCube
+
+void main() {
+    // 直接用 3D 方向向量去采样 Cubemap
+    FragColor = texture(skybox, TexCoords);
+}
+```
+
+
+
+#### 4.主循环
+
+天空盒要求模拟真实的天空，就要求场景里的东西必须挡住天空，而天空盒不能挡住任何物体。传统做法就是先绘制天空盒，再绘制物体。在gpu中就是绘制完所有东西之后，天空盒中那些被场景挡住的像素直接被覆盖了，相当于白绘制了，造成资源浪费。
+
+为了极致的性能，Modern OpenGL 采用了一种**逆向思维**：把天空盒放在最后绘制！利用深度测试，让已经画好的房子和树木直接把天空盒剔除掉，这样 GPU 连天空盒被挡住部分的像素着色器都不用跑了。
+
+因为我们在顶点着色器里把天空盒的深度设置成了最远的 `1.0`，所以在渲染循环中，我们需要配合调整 OpenGL 的深度测试条件.
+
+```c++
+//当执行深度清屏时，OpenGL 默认会把深度缓冲区（Depth Buffer）里全屏每一个像素的值全部填满为 1.0（代表目前没有任何东西，全是最远距离）
+glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+// 1. 正常渲染场景中的 3D 实体模型（房子、玩家、树木）
+glEnable(GL_DEPTH_TEST);
+glDepthFunc(GL_LESS); // 默认比较条件,只有深度 < 当前 Depth Buffer 的像素才能画上去，例如各种3D物体
+
+drawSceneObjects();
+
+// 2. 渲染天空盒
+// GL_LEQUAL（小于等于）,允许深度等于 1.0 的片段通过
+// 当 GPU 遇到之前画过房子的地方（深度0.2）,1.0(天空盒) >= 0.2，不绘制天空盒。
+// 当 GPU 遇到背景空白区域（深度1.0）：1.0(天空盒)= 1.0,绘制天空盒
+glDepthFunc(GL_LEQUAL); 
+
+skyboxShader.use();
+skyboxShader.setMat4("view", camera.GetViewMatrix());
+skyboxShader.setMat4("projection", camera.GetProjectionMatrix());
+
+glBindVertexArray(skyboxVAO);
+glActiveTexture(GL_TEXTURE0);
+glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+glDrawArrays(GL_TRIANGLES, 0, 36); // 绘制 36 个顶点构成的立方体
+
+// 恢复默认深度测试比较条件
+glDepthFunc(GL_LESS);
+```
+
+
+
+#### 5.Cubemap的进阶：环境映射（反射和折射）
+
+Cubemap 不仅能画天空，还能作为**环境光照贴图**，让场景中的物体拥有质感满满的动态反射（Reflection）或折射（Refraction）效果！
+
+##### 1.镜像反射
+
+根据入射光向量 $I$（相机到物体的向量）和表面法线 $N$，计算出反射向量 $R = \text{reflect}(I, N)$，然后用 $R$ 去采样天空盒。
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+
+in vec3 Normal; // 世界空间法线
+in vec3 Position; // 世界空间顶点位置
+
+uniform vec3 cameraPos; // 摄像机位置
+uniform samplerCube skybox; // 天空盒
+
+void main() {
+    vec3 I = normalize(Position - cameraPos); // 入射光线
+    vec3 N = normalize(Normal);               // 法线
+    vec3 R = reflect(I, N);                  // 计算反射向量
+    
+    // 用反射向量去采样天空盒，实现铬合金/金属镜面效果！
+    FragColor = vec4(texture(skybox, R).rgb, 1.0);
+}
+```
+
+
+
+##### 2.玻璃折射
+
+利用斯涅尔定律（Snell's Law），使用 GLSL 内置的 `refract()` 函数，传入折射率比值（例如空气到玻璃的折射率约 $\frac{1.00}{1.52} \approx 0.66$）。
+
+```glsl
+// 只需要把 reflect 换成 refract
+float ratio = 1.00 / 1.52; // 空气 -> 玻璃
+vec3 R = refract(I, normalize(Normal), ratio);
+FragColor = vec4(texture(skybox, R).rgb, 1.0);
+```
+
+
+
+## 第十九章.高级数据和高级GLSL
+
+在之前的渲染体验中，我们就像在使用“新手套装”：每次给 GPU 发送顶点，都是用 `glBufferData` 把数据一口气塞过去；每次给 Shader 传变量，都是用 `glUniformMatrix4fv` 逐个挨个喂。
+
+但在大型游戏或者复杂场景中，这种“一次性、搬砖式”的数据传输会带来严重的 CPU 与 GPU 传输瓶颈。**本章我们将解锁 GPU 显存的“高级操作手册”，学会如何像外科医生一样精细手术显存，以及使用高阶 GLSL 技巧让多 Shader 共享内存！**
+
+
+
+#### 1.显存的“微创手术”：`glBufferSubData` 与 `glMapBuffer`
+
+##### 局部更新：`glBufferSubData`
+
+想象一下，你创建了一个包含 $100$ 万个顶点的巨大 VBO。每一帧，你只需要修改其中 $10$ 个顶点的位置。
+
+如果你继续调用 `glBufferData`，GPU 会做一件极其奢侈的事：**销毁整块旧显存，重新开辟显存，并把 $100$ 万个顶点重新搬运一遍！**
+
+**`glBufferSubData`** 就像是显存的“微创手术”，它允许你在不重新分配显存的前提下，**只替换指定偏移量（Offset）和大小（Size）的内存数据**。
+
+```c++
+// 1. 初始化阶段：开辟 100 万个 float 的空间，但先不传数据 (传 NULL)
+glBindBuffer(GL_ARRAY_BUFFER, VBO);
+glBufferData(GL_ARRAY_BUFFER, 1000000 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+
+// 2. 渲染循环中：只更新第 100 到 103 个 float 的数据（零显存重新分配开销！）
+float newPos[] = { 1.2f, 3.4f, 5.6f };
+glBufferSubData(GL_ARRAY_BUFFER, 100 * sizeof(float), sizeof(newPos), newPos);
+```
+
+
+
+##### 显存指针：`glMapBuffer`
+
+如果需要频繁对海量数据进行逻辑修改（比如在 CPU 上做布衣物理模拟、粒子位置更新），反复调用 `glBufferSubData` 依然会有大量的 API 函数开销。
+
+**`glMapBuffer`** 允许你直接**拿到指向 GPU 显存的 C++ 内存指针**！你可以像操作普通 C++ 数组一样直接写内存：
+
+```c++
+glBindBuffer(GL_ARRAY_BUFFER, VBO);
+
+// 1. 将显存“映射”到 CPU 可写的指针地址
+float* ptr = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+
+if (ptr) {
+    // 2. CPU 直接写显存（完全没有 API 函数调用开销）
+    ptr[0] = 10.0f; // 修改第 0 个 float
+    ptr[1] = 20.0f; // 修改第 1 个 float
+    
+    // 3. 修改完毕后必须解绑！GPU 才能安全读取这块显存
+    glUnmapBuffer(GL_ARRAY_BUFFER);
+}
+```
+
+
+
+#### 2.显存内的零拷贝：`glCopyBufferSubData`
+
+如果你想把数据从 Buffer A 复制到 Buffer B，传统方式是：
+
+$$\text{GPU (Buffer A)} \xrightarrow{\text{PCIe Bus}} \text{CPU RAM} \xrightarrow{\text{PCIe Bus}} \text{GPU (Buffer B)}$$
+
+这种跨 PCIe 总线的传输极其缓慢！
+
+**`glCopyBufferSubData`** 可以让数据**直接在 GPU 显存内部完成高速克隆**：
+
+```c++
+// 绑定源与目标缓冲区（使用专属的 COPY 绑定点，防止挤占普通的 ARRAY_BUFFER）
+glBindBuffer(GL_COPY_READ_BUFFER, vboSource);
+glBindBuffer(GL_COPY_WRITE_BUFFER, vboTarget);
+
+// 将 vboSource 从 0 偏移开始的 1024 字节，直接克隆到 vboTarget 的 0 偏移处
+glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, 1024);
+```
+
+
+
+#### 3.高级 GLSL：内嵌变量（Built-in Variables）
+
+GLSL 为我们内置了一些非常实用的全局变量，熟练使用它们可以省去很多手写传递数据的麻烦。
+
+##### 1. 顶点着色器内置变量
+
+- **`gl_VertexID`**：当前正在处理的顶点的**索引编号**（当使用 `glDrawElements` 时它代表索引值，使用 `glDrawArrays` 时代表顶点的序号）。可以用来在 Shader 里根据 ID 动态生成 procedural 几何形状！
+- **`gl_PointSize`**：如果开启了 `glEnable(GL_PROGRAM_POINT_SIZE);`，你可以直接在 VS 里动态控制**点图元渲染出来的像素像素大小**（非常适合做星空或动态粒子系统）。
+
+
+
+##### 2. 片段着色器内置变量
+
+- **`gl_FragCoord`**：当前片段在**屏幕窗口空间下的坐标**（$x, y, z$），$x, y$ 代表屏幕像素坐标（如 $1920 \times 1080$ 下的像素位置），$z$ 代表该片段的深度的 $0.0 \sim 1.0$ 值。可以用来做视口级别的扫描线、棋盘格或屏幕空间特效！
+- **`gl_FrontFacing`**：布尔值，告诉你当前片段属于**正面（Front Face）还是背面（Back Face）**。在画双面透明物体（如双面发光的玻璃）时，你可以根据它动态翻转法线！
+
+
+
+```c++
+// 片段着色器：双面发光材质
+#version 330 core
+out vec4 FragColor;
+in vec3 Normal;
+
+void main() {
+    vec3 N = normalize(Normal);
+    if (!gl_FrontFacing) {
+        N = -N; // 如果渲染的是背面，自动翻转法线方向！
+    }
+    // 正常计算光照...
+}
+```
+
+
+
+#### 4.跨 Shader 终极共享内存：统一缓冲区对象（UBO）
+
+##### 1. 痛点：被 Uniform 传参支配的恐惧
+
+假设你的场景里有 $10$ 个不同的 Shader 程序（有的渲染角色、有的渲染地形、有的渲染水体）。每一个 Shader 都需要用到摄像机的 **投影矩阵 (`projection`)** 和 **视图矩阵 (`view`)**。
+
+传统做法是：在每一帧渲染循环里，你需要切 10 次 Shader，手写 20 次 `glUniformMatrix4fv`！这不仅代码冗长，而且 API 交互开销巨大。
+
+##### 2. 解法：Uniform Buffer Object (UBO)
+
+UBO 允许我们在 GPU 里开辟一块**公共显存内存区**。所有 Shader 都能“挂载”到这块内存区。**你只需在 C++ 端更新一次 UBO，所有 Shader 就会瞬间同时收到最新的 View/Projection 矩阵！**
+
+
+
+```glsl
+#version 330 core
+layout (location = 0) in vec3 aPos;
+
+// 定义 Uniform 块
+layout (std140) uniform Matrices {
+    mat4 projection;
+    mat4 view;
+}; // 👈 所有 Shader 里这一段保持一模一样即可！
+
+uniform mat4 model;
+
+void main() {
+    gl_Position = projection * view * model * vec4(aPos, 1.0);
+}
+```
+
+
+
+```c++
+// Step 1: 建立连接 - 将 Shader 的 Block 绑定到绑点 (Binding Point 0)
+unsigned int blockIndexA = glGetUniformBlockIndex(shaderA.ID, "Matrices");
+glUniformBlockBinding(shaderA.ID, blockIndexA, 0); // 挂载到 Binding Point 0
+
+unsigned int blockIndexB = glGetUniformBlockIndex(shaderB.ID, "Matrices");
+glUniformBlockBinding(shaderB.ID, blockIndexB, 0); // 挂载到 Binding Point 0
+
+// Step 2: 在 GPU 开辟 UBO 显存空间
+unsigned int uboMatrices;
+glGenBuffers(1, &uboMatrices);
+glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
+// 空间大小为 2 个 mat4 (projection + view)
+glBufferData(GL_UNIFORM_BUFFER, 2 * sizeof(glm::mat4), NULL, GL_STATIC_DRAW);
+glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+// 将我们创建的 UBO 绑定到 Binding Point 0 上！
+glBindBufferBase(GL_UNIFORM_BUFFER, 0, uboMatrices);
+
+// Step 3: 初始化填充投影矩阵 Projection (假设投影矩阵几乎不变)
+glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
+// 从 0 偏移处填充 projection 矩阵
+glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(glm::mat4), glm::value_ptr(projection));
+glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+// Step 4: 每帧渲染循环 - 只更新一次 View 矩阵！
+
+glBindBuffer(GL_UNIFORM_BUFFER, uboMatrices);
+// 视图矩阵在第 2 个 mat4 位置，所以偏移量为 sizeof(glm::mat4)
+glBufferSubData(GL_UNIFORM_BUFFER, sizeof(glm::mat4), sizeof(glm::mat4), glm::value_ptr(view));
+glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+// 接下来直接切 Shader 绘制即可，再也不用调用 glUniformMatrix4fv("view") 了！
+shaderA.use();
+drawMeshA();
+
+shaderB.use();
+drawMeshB();
+```
+
+
+
+## 第二十章.几何着色器
+
+在之前的管线中，**顶点着色器（Vertex Shader）** 是个“死脑筋”——CPU 传进来 1 个顶点，它就必须且只能输出 1 个顶点，绝对无法凭空凭空变出新的几何体。
+
+而位于顶点着色器和光栅化阶段之间的 **几何着色器（Geometry Shader，简称 GS）**，则赋予了 GPU “无中生有”的魔法：**它可以接收一整套图元（点、线段或三角形），并在 GPU 端实时销毁、修改或“分裂生成”全新的几何图元！**
+
+
+
+#### 1.几何着色器的核心机制
+
+几何着色器的输入不是单个顶点，而是**完整的图元（Primitive）**。在代码中，你必须明确声明输入与输出的图元类型：
+
+- **输入图元类型（`layout(...) in`）**：
+  - `points`：接收单个点（每个点 $1$ 个顶点）
+  - `lines`：接收线段（每条线 $2$ 个顶点）
+  - `triangles`：接收三角形（每个三角形 $3$ 个顶点）
+- **输出图元类型（`layout(...) out`）**：
+  - `points`
+  - `line_strip`（连续折线）
+  - `triangle_strip`（连续三角形带）
+
+GLSL 提供了两个极其核心的内置函数：
+
+1. **`EmitVertex()`**：发射当前设置好的顶点数据（位置、颜色等）。
+2. **`EndPrimitive()`**：将前面通过 `EmitVertex()` 发射的多个顶点组合成一个完整图元输出。
+
+
+
+#### 2.例子:点扩散房子
+
+假设 CPU 只向 GPU 传输了 **4 个简单的点坐标**。通过几何着色器，我们可以将每一个“点”实时扩展成由 5 个顶点构成的“小房子（四边形 + 三角形屋顶）”！
+
+1.顶点着色器
+
+仅做简单的坐标传递，不做 MVP 变换（留给 GS 处理）：
+
+```glsl
+#version 330 core
+layout (location = 0) in vec2 aPos;
+layout (location = 1) in vec3 aColor;
+
+out VS_OUT {
+    vec3 color;
+} vs_out;
+
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+    vs_out.color = aColor;
+}
+```
+
+
+
+2.几何着色器
+
+```glsl
+#version 330 core
+layout (points) in;                         // 输入：单个点
+layout (triangle_strip, max_vertices = 5) out; // 输出：最多 5 个顶点的三角形带
+
+in VS_OUT {
+    vec3 color;
+} gs_in[]; // 注意：GS 输入是一个数组，对应图元包含的所有顶点！
+
+out vec3 fColor;
+
+void build_house(vec4 position) {
+    fColor = gs_in[0].color; // 使用输入点的颜色
+    
+    // 生成小房子的 5 个相对偏移坐标
+    gl_Position = position + vec4(-0.2, -0.2, 0.0, 0.0); // 0: 左下
+    EmitVertex();
+    
+    gl_Position = position + vec4( 0.2, -0.2, 0.0, 0.0); // 1: 右下
+    EmitVertex();
+    
+    gl_Position = position + vec4(-0.2,  0.2, 0.0, 0.0); // 2: 左上
+    EmitVertex();
+    
+    gl_Position = position + vec4( 0.2,  0.2, 0.0, 0.0); // 3: 右上
+    EmitVertex();
+    
+    gl_Position = position + vec4( 0.0,  0.4, 0.0, 0.0); // 4: 屋顶尖角
+    fColor = vec3(1.0, 1.0, 1.0); // 屋顶设为白色
+    EmitVertex();
+    
+    EndPrimitive(); // 结束图元绘制，构成一个小房子！
+}
+
+void main() {
+    build_house(gl_in[0].gl_Position); // gl_in[0] 代表输入点的原始位置
+}
+```
+
+
+
+3.片段着色器
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+in vec3 fColor;
+
+void main() {
+    FragColor = vec4(fColor, 1.0);
+}
+```
+
+
+
+#### 3.几何着色器的杀手级应用场景
+
+虽然 Geometry Shader 性能开销相对普通管线略高，但在某些特殊场景下具有不可替代的优势：
+
+##### 1. 爆炸效果（Explode Mesh）
+
+沿着三角形的**法线方向**，将面上的三个顶点整体向外平移。在渲染复杂模型时，开启这个 GS 就能瞬间做出物体被炸成碎片分散飞出效果！
+
+```glsl
+// 在 GS 中沿法线平移三角形
+vec3 GetNormal() {
+    vec3 a = vec3(gl_in[0].gl_Position) - vec3(gl_in[1].gl_Position);
+    vec3 b = vec3(gl_in[2].gl_Position) - vec3(gl_in[1].gl_Position);
+    return normalize(cross(a, b)); // 计算几何法线
+}
+```
+
+
+
+##### 2.法线可视化
+
+手写 Shader 时如果发现光照不对，可以用 GS 针对每个顶点发射一条固定长度的**短线段**，直接在 3D 界面里直观地把顶点的法线方向“画”出来。
+
+
+
+##### 3.告示牌/粒子系统（Billboard / Particle System）
+
+CPU 只需要向 GPU 传输几千个质点的坐标（极大节省内存带宽），GS 自动在 GPU 端将每个点展开为面向相机的正方形（Quad/Billboard），用于渲染火焰、烟雾、雪花或雨滴粒子。
