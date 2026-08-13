@@ -5169,7 +5169,7 @@ glDrawArrays(GL_TRIANGLES, 0, modelVertexCount); // 正常绘制即可，GS 会�
 
 
 
-## 第二十一章.实例化渲染
+## 第二十一章.实例化渲染(Instanced Rendering)
 
 #### 1.核心痛点与解决思路
 
@@ -5350,3 +5350,168 @@ void main() {
 
 
 c++端
+
+**我们不需要重新创建 VBO，而是使用 `glBufferSubData` 在原显存位置上局部重写！**
+
+```c++
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+#include <vector>
+
+class ParticleSystem {
+public:
+    unsigned int maxParticles;
+    std::vector<Particle> particles;
+    std::vector<ParticleInstanceData> instanceDataCache; // CPU 端的写屏缓冲区
+
+    unsigned int quadVAO;
+    unsigned int instanceVBO;
+
+    ParticleSystem(unsigned int count) : maxParticles(count) {
+        particles.resize(maxParticles);
+        instanceDataCache.resize(maxParticles);
+        initRenderData();
+    }
+
+    // 1. 初始化 VAO 与 VBO
+    void initRenderData() {
+        // 静态 Quad 顶点数据 (用于渲染单个粒子贴图面板)
+        float quadVertices[] = {
+            // 位置          // 纹理 UV
+            -0.5f,  0.5f, 0.0f,  0.0f, 1.0f,
+            -0.5f, -0.5f, 0.0f,  0.0f, 0.0f,
+             0.5f, -0.5f, 0.0f,  1.0f, 0.0f,
+
+            -0.5f,  0.5f, 0.0f,  0.0f, 1.0f,
+             0.5f, -0.5f, 0.0f,  1.0f, 0.0f,
+             0.5f,  0.5f, 0.0f,  1.0f, 1.0f
+        };
+
+        unsigned int quadVBO;
+        glGenVertexArrays(1, &quadVAO);
+        glGenBuffers(1, &quadVBO);
+
+        glBindVertexArray(quadVAO);
+
+        // 绑定静态 Quad VBO
+        glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+
+        // Location 0: aQuadVertex
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        // Location 1: aTexCoords
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+
+        // ---- 绑定动态 Instance VBO ----
+        glGenBuffers(1, &instanceVBO);
+        glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+        // 关键点：开辟 GL_DYNAMIC_DRAW 显存空间，但先不填充数据！
+        glBufferData(GL_ARRAY_BUFFER, maxParticles * sizeof(ParticleInstanceData), NULL, GL_DYNAMIC_DRAW);
+
+        // Location 2: aInstancePos (vec3)
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleInstanceData), (void*)offsetof(ParticleInstanceData, position));
+        glVertexAttribDivisor(2, 1); // 👈 每一个实例更新一次！
+
+        // Location 3: aInstanceColor (vec4)
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(ParticleInstanceData), (void*)offsetof(ParticleInstanceData, color));
+        glVertexAttribDivisor(3, 1); // 👈 每一个实例更新一次！
+
+        // Location 4: aInstanceScale (float)
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleInstanceData), (void*)offsetof(ParticleInstanceData, scale));
+        glVertexAttribDivisor(4, 1); // 👈 每一个实例更新一次！
+
+        glBindVertexArray(0);
+    }
+
+    // 2. 每一帧在 CPU 端模拟 10,000 个粒子的运动物理逻辑
+    void update(float dt) {
+        int activeCount = 0;
+
+        for (unsigned int i = 0; i < maxParticles; i++) {
+            Particle& p = particles[i];
+            p.life -= dt; // 扣减生命周期
+
+            // 如果粒子死亡，在喷射源重新复活（例如火焰喷泉）
+            if (p.life <= 0.0f) {
+                p.position = glm::vec3(0.0f, 0.0f, 0.0f); // 喷泉中心
+                p.velocity = glm::vec3((rand() % 100 - 50) / 10.0f, (rand() % 100) / 5.0f + 5.0f, (rand() % 100 - 50) / 10.0f);
+                p.color = glm::vec4(1.0f, 0.5f, 0.1f, 1.0f); // 初始火焰橙色
+                p.size = 0.2f;
+                p.life = 2.0f; // 存活 2 秒
+            }
+
+            // 物理运动计算：位置 += 速度 * dt；受重力影响
+            p.velocity.y -= 9.8f * dt * 0.5f; // 重力加速度
+            p.position += p.velocity * dt;
+            p.color.a = p.life / 2.0f; // Alpha 透明度随寿命平滑渐变消失
+
+            // 将活跃的粒子数据打包进写屏缓存 (Cache)
+            instanceDataCache[activeCount].position = p.position;
+            instanceDataCache[activeCount].color = p.color;
+            instanceDataCache[activeCount].scale = p.size;
+            activeCount++;
+        }
+
+        // 👈 核心显存更新：使用 glBufferSubData 局部刷写显存！极其高速！
+        glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, activeCount * sizeof(ParticleInstanceData), &instanceDataCache[0]);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    // 3. 渲染绘制
+    void draw(Shader& shader) {
+        // 开启混合 (Blending)，实现火焰/光效的半透明叠加
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE); // 加算混合 (Additive Blending) 效果更好！
+        glDepthMask(GL_FALSE);             // 关闭深度写入，防止粒子相互遮挡黑边
+
+        shader.use();
+        glBindVertexArray(quadVAO);
+
+        // 👈 仅用 1 次 Draw Call，瞬间绘制全屏 10,000 个动态粒子！
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, maxParticles);
+
+        glBindVertexArray(0);
+        glDepthMask(GL_TRUE); // 还原深度 mask
+    }
+};
+```
+
+
+
+while循环
+
+```c++
+ParticleSystem particleSys(10000); // 创建包含 10,000 个粒子的系统
+
+float lastFrame = 0.0f;
+
+while (!glfwWindowShouldClose(window)) {
+    float currentFrame = glfwGetTime();
+    float deltaTime = currentFrame - lastFrame;
+    lastFrame = currentFrame;
+
+    // 1. CPU 更新 10,000 个粒子的物理位置并刷写显存
+    particleSys.update(deltaTime);
+
+    // 2. 清屏
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // 3. GPU 一次性批量渲染
+    particleShader.use();
+    particleShader.setMat4("projection", projection);
+    particleShader.setMat4("view", view);
+    
+    particleSys.draw(particleShader);
+
+    glfwSwapBuffers(window);
+    glfwPollEvents();
+}
+```
+
