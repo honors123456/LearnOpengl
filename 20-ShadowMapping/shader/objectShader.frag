@@ -2,10 +2,6 @@
 
 out vec4 FragColor;
 
-in vec3 fragPos;
-in vec3 normal;
-in vec2 TexCoords;
-
 struct Light {
     int type;            // 0=平行光 1=点光源 2=聚光灯
 
@@ -31,6 +27,13 @@ struct Material {
     float shininess;     // 高光锐利度
 };
 
+in VS_OUT {
+    vec3 FragPos;
+    vec3 Normal;
+    vec2 TexCoords;
+    vec4 FragPosLightSpace; //当前像素在光源视角下的裁剪空间坐标
+} fs_in;
+
 
 //材质颜色
 uniform Material material;
@@ -38,6 +41,8 @@ uniform Material material;
 uniform Light light;
 //摄像机位置
 uniform vec3 cameraPos;
+
+uniform sampler2D shadowMap;
 
 // 平行光：方向全局一致，无位置、无衰减
 vec3 CalcDirectional(vec3 N, vec3 V, vec3 diffuseColor, vec3 specularColor)
@@ -62,11 +67,11 @@ vec3 CalcDirectional(vec3 N, vec3 V, vec3 diffuseColor, vec3 specularColor)
 vec3 CalcPoint(vec3 N, vec3 V, vec3 diffuseColor, vec3 specularColor)
 {
     //计算距离衰减系数
-    float dist = length(light.position - fragPos);
+    float dist = length(light.position - fs_in.FragPos);
     float attenuation = 1.0 / (light.constant + light.linear * dist + light.quadratic * dist * dist);
 
     //环境光
-    vec3 L = normalize(light.position - fragPos);  // 指向光源
+    vec3 L = normalize(light.position - fs_in.FragPos);  // 指向光源
     vec3 ambient  = light.ambient  * diffuseColor  * attenuation;
 
     //漫反射
@@ -85,11 +90,11 @@ vec3 CalcPoint(vec3 N, vec3 V, vec3 diffuseColor, vec3 specularColor)
 vec3 CalcSpot(vec3 N, vec3 V, vec3 diffuseColor, vec3 specularColor)
 {
     //计算距离衰减系数
-    float dist = length(light.position - fragPos);
+    float dist = length(light.position - fs_in.FragPos);
     float attenuation = 1.0 / (light.constant + light.linear * dist + light.quadratic * dist * dist);
 
     //环境光
-    vec3 L = normalize(light.position - fragPos);  // 指向光源
+    vec3 L = normalize(light.position - fs_in.FragPos);  // 指向光源
     vec3 ambient  = light.ambient  * diffuseColor  * attenuation;
 
      // 光锥判定：片元指向光源的方向 与 光源照射方向 的夹角
@@ -109,14 +114,46 @@ vec3 CalcSpot(vec3 N, vec3 V, vec3 diffuseColor, vec3 specularColor)
     return ambient + diffuse + specular;
 }
 
+// 阴影计算：把片元变换到光源视角，与深度贴图比较，判断是否被遮挡
+float ShadowCalculation(vec4 fragPosLightSpace)
+{
+    // 1. 透视除法：裁剪空间坐标 -> NDC [-1, 1]
+    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    // 2. NDC -> 纹理采样坐标 [0, 1]
+    projCoords = projCoords * 0.5 + 0.5;
+
+    // 3. 当前片元在光源视角下的深度
+    float currentDepth = projCoords.z;
+
+    // 4. 与深度贴图比较（加 bias 消除自阴影 Shadow Acne，用 3x3 PCF 柔化边缘）
+    float bias = 0.005;
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            float closestDepth = texture(shadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
+            shadow += currentDepth - bias > closestDepth ? 1.0 : 0.0;
+        }
+    }
+    shadow /= 9.0;
+
+    // 超出阴影贴图范围的部分不判定为阴影（避免物体外被误判成黑）
+    if (projCoords.z > 1.0)
+        shadow = 0.0;
+
+    return shadow;
+}
+
 void main()
 {
-    vec3 N = normalize(normal);
-    vec3 V = normalize(cameraPos - fragPos);
+    vec3 N = normalize(fs_in.Normal);
+    vec3 V = normalize(cameraPos - fs_in.FragPos);
 
     // 手动做 Gamma 校正的逆运算（转回线性空间）
-    vec3 diffuseColor = pow(texture(material.diffuse, TexCoords).rgb, vec3(2.2));
-    vec3 specularColor = texture(material.specular, TexCoords).rgb;
+    vec3 diffuseColor = pow(texture(material.diffuse, fs_in.TexCoords).rgb, vec3(2.2));
+    vec3 specularColor = texture(material.specular, fs_in.TexCoords).rgb;
 
     vec3 color;
     if (light.type == 0)
@@ -126,7 +163,11 @@ void main()
     else
         color = CalcSpot(N, V, diffuseColor, specularColor);
 
-    // 片段着色器的最后一步：Gamma 校正
-    vec3 finalColor = pow(color, vec3(1.0 / 2.2));
+    // 计算阴影系数（点光源 type=1 全向发光，2D 阴影贴图不适用，直接跳过）
+    float shadow = (light.type == 1) ? 0.0 : ShadowCalculation(fs_in.FragPosLightSpace);
+
+    // 阴影区域只保留环境光，亮部保留完整光照
+    vec3 finalColor = pow(shadow * light.ambient * diffuseColor + (1.0 - shadow) * color, vec3(1.0 / 2.2));
+
     FragColor = vec4(finalColor, 1.0);
 }
