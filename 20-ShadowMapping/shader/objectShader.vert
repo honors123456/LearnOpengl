@@ -13,7 +13,7 @@ uniform mat4 lightSpaceMatrix; // 光源的 Projection * View 矩阵（阴影映
 out VS_OUT {
     vec3 FragPos;           //世界空间下的片段坐标
     vec3 Normal;            //世界空间下的法线向量
-    vec2 TexCoords;
+    vec2 TexCoords;         //世界空间下的纹理坐标
     vec4 FragPosLightSpace; //当前片段在光源视角下的裁剪空间坐标
 } vs_out;
 
@@ -27,6 +27,7 @@ void main()
     vs_out.TexCoords = aTexCoords;
 
     //将世界坐标变换到光源裁剪空间（供片元阶段做阴影比较）
+    //该物体使用有两套裁剪空间，1.摄像机视角(绘制) 2.光源视角(比较深度信息)
     vs_out.FragPosLightSpace = lightSpaceMatrix * vec4(vs_out.FragPos, 1.0);
 
     //转换为裁剪空间坐标

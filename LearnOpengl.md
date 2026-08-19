@@ -5966,142 +5966,1032 @@ FragColor = vec4(finalColor, 1.0);
 
 
 
-#### 2.流程
+#### 2.核心架构：两步绘制法（The Two-Pass Algorithm）
 
-要画出阴影，我们在每一帧里必须进行**两次渲染（两次绘制场景）**：
-
-##### 1.深度渲染
-
-##### 从光源的视角出发：
-
-- **干了什么：** 我们把摄像机（Camera）强行挪到**光源（Light Source）**的位置，让光源当一次“眼睛”，朝着场景看一眼。
-- **记录什么：** 在这个视角下，我们不需要计算复杂的颜色、贴图和光照，**我们只记录每一个像素距离光源的距离（即深度值 Depth）**。
-- **输出成果：** 这张记录了“光源视角下所有最近距离”的纹理，被称为 **深度贴图（Depth Map）** 或 **阴影贴图（Shadow Map）**。
+为了在屏幕上画出阴影，显卡（GPU）在每一帧里必须**把整个场景画两遍（Two Passes）**：
 
 
 
-##### 2.正式渲染
+##### 第一步（Pass 1）：光源当相机，拍一张“深度照片”
 
-##### 从玩家摄像机的视角出发
+1. **摆放相机：** 把摄像机强行挪到光源的位置（比如太阳的位置）。
+2. **只看距离，不看颜色：** 从光源视角看过去，我们不需要知道物体是红的还是绿的，**我们只关心“每个像素距离光源有多远”**。
+3. **记录存盘：** 显卡把这些距离（深度值 Depth）存进一张黑白纹理图片里。这张图片就叫 **深度贴图（Depth Map / Shadow Map）**。
 
-- **干了什么：** 把摄像机切回玩家的正常视角，开始正常给物体上色、算光照。
-
-- ##### 如何判断有没有阴影？
-
-  当你在渲染场景里的某一个像素时，你问它一个问题：
-
-  “从光源的角度来看，你距离光源的深度，是不是比当年光源记录在深度贴图里的深度还要远？”
-
-  - 如果**更远**（或者明显大于深度图里的值）：说明在你和光源之间，有别的物体挡住了光！**判定为阴影（变暗）**。
-  - 如果**差不多/更近**：说明光线畅通无阻直接照到了你！**判定为亮部（正常光照）**。
+> **这张照片的含义：** 照片里记录的每一个像素值，代表了**从光源出发，沿着这个方向能撞到的“第一个障碍物”的最近距离（Closest Depth）**。
 
 
 
-#### 3.代码
+##### 第二步（Pass 2）：玩家当相机，正式画画与“查账”
 
-##### 生成深度贴图（Depth Map 渲染 Pass）
+把摄像机切回玩家眼睛的位置，正常给场景上色。
+
+当 GPU 准备画地面上的某个像素点 P时，它在后台悄悄做了一场**“跨时空查账”**：
+
+1. **坐标转换：** 把像素 P的 3D 世界坐标，投射回 Pass 1 那张“光源深度照片”的对应位置上。
+2. 获取两个深度值：
+   - **真实距离 (Dcurrent\*D\*current)：** 点 P此时此刻距离光源的真实物理距离。
+   - **照片距离 (Dclosest\*D\*closest)：** 查一下 Pass 1 照片里，在这个方向上记录的最近距离。
+3. 灵魂对比：
+   - 如果 Dcurrent≈Dclosest*D*current≈*D*closest：说明点 P*P* 就是当年光源撞到的那个第一个物体，光线直接照到了它 →→ **它是亮部！**
+   - 如果 Dcurrent>Dclosest*D*current>*D*closest：说明在点 P*P* 和光源之间，**早就有一个更近的物体把光线挡住了！** →→ **点 P\*P\* 陷落于阴影中！**
+
+
+
+#### 3.代码:从 0 到 1 构建阴影管线
+
+##### 1. 配置 Pass 1 的离屏“深度容器”（Depth Framebuffer）
 
 我们在 C++ 端配置一个专门用来存深度的帧缓冲（FBO），注意：**我们只需要深度附件（Depth Attachment），不需要颜色附件！**
 
 ```c++
+// 1. 创建深度帧缓冲 (FBO)
 unsigned int depthMapFBO;
 glGenFramebuffers(1, &depthMapFBO);
 
-// 1. 创建一张 2D 纹理，用来专门存深度值
+// 2. 创建 2D 深度纹理 (1024x1024 分辨率)
+const unsigned int SHADOW_WIDTH = 1024, SHADOW_HEIGHT = 1024;
 unsigned int depthMap;
 glGenTextures(1, &depthMap);
 glBindTexture(GL_TEXTURE_2D, depthMap);
+// 注意：内存格式为 GL_DEPTH_COMPONENT，只分配 32 位浮点数存深度！
 glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, SHADOW_WIDTH, SHADOW_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-// 设置纹理环绕边缘为 CLARE_TO_BORDER（防止阴影边界外被无限拉伸）
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-float borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
-glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
 
-// 2. 将深度纹理挂载到 FBO 的深度附件上
+// 3. 把深度纹理挂载到 FBO 上
 glBindFramebuffer(GL_FRAMEBUFFER, depthMapFBO);
 glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthMap, 0);
-glDrawBuffer(GL_NONE); // 告诉 OpenGL 我们不需要任何颜色输出！
+glDrawBuffer(GL_NONE); // 显式告诉 OpenGL：我们不需要写入任何颜色！
 glReadBuffer(GL_NONE);
 glBindFramebuffer(GL_FRAMEBUFFER, 0);
 ```
 
 
 
-##### 深度着色器 (`shadow_mapping.vs / fs`)
+##### 2. Pass 1 着色器：极速生成深度图
 
-在这一步，我们只需要把顶点从世界空间转换到**光源的裁剪空间**：
+因为 Pass 1 只需要算深度，Shader 简洁到了极致：
+
+##### **Pass 1 顶点着色器 (`shadow_depth.vs`)：**
 
 ```c++
 # version 330 core
 layout (location = 0) in vec3 aPos;
 
-uniform mat4 lightSpaceMatrix; // 光源的 Projection * View 矩阵
+uniform mat4 lightSpaceMatrix; // 👈 光源视角矩阵 (Light Projection * Light View)
 uniform mat4 model;
 
-void main()
-{
+void main() {
+    // 把顶点从模型空间直接转换到“光源视角下的裁剪空间”
     gl_Position = lightSpaceMatrix * model * vec4(aPos, 1.0);
+}
+```
+
+```glsl
+# version 330 core
+void main() {
+    // 啥都不用写！GPU 硬件光栅化器会自动把 gl_Position.z 写入深度贴图！
 }
 ```
 
 
 
-##### 正式着色器：
+##### 3. Pass 2 着色器：正式查账与阴影计算
+
+##### 片段着色器（FS）拿到 Pass 1 拍好的 `shadowMap` 纹理，开始比对深度：
 
 在正式渲染场景时，我们在片段着色器中通过 **光源空间矩阵（LightSpaceMatrix）** 把当前片元投影到光源的视角下，去查那张深度贴图。
 
-```c++
-# version 330 core
+```glsl
+#version 330 core
+layout (location = 0) in vec3 aCoord;   //顶点
+layout (location = 1) in vec3 aNormal;  //法线
+layout (location = 2) in vec2 aTexCoords; //纹理坐标
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+uniform mat3 normalMatrix;  //逆转置法线矩阵
+uniform mat4 lightSpaceMatrix; // 光源的 Projection * View 矩阵（阴影映射用）
+
+out VS_OUT {
+    vec3 FragPos;           //世界空间下的片段坐标
+    vec3 Normal;            //世界空间下的法线向量
+    vec2 TexCoords;         //世界空间下的纹理坐标
+    vec4 FragPosLightSpace; //当前片段在光源视角下的裁剪空间坐标
+} vs_out;
+
+void main()
+{
+    //局部空间转为世界空间
+    vs_out.FragPos = vec3(model * vec4(aCoord,1.0));
+
+    //法线
+    vs_out.Normal = normalMatrix * aNormal;
+    vs_out.TexCoords = aTexCoords;
+
+    //将世界坐标变换到光源裁剪空间（供片元阶段做阴影比较）
+    vs_out.FragPosLightSpace = lightSpaceMatrix * vec4(vs_out.FragPos, 1.0);
+
+    //转换为裁剪空间坐标
+    gl_Position = projection * view * model * vec4(aCoord,1.0);
+}
+
+```
+
+
+
+```glsl
+#version 330 core
+
 out vec4 FragColor;
+
+struct Light {
+    vec3 direction;      // 平行光照射方向（从光源射向场景）
+    vec3 ambient;        // 环境光
+    vec3 diffuse;        // 漫反射
+    vec3 specular;       // 高光
+};
+
+struct Material {
+    sampler2D diffuse;   // 漫反射贴图
+    sampler2D specular;  // 高光贴图
+    float shininess;     // 高光锐利度
+};
 
 in VS_OUT {
     vec3 FragPos;
     vec3 Normal;
     vec2 TexCoords;
-    vec4 FragPosLightSpace; // 👈 当前像素在光源视角下的裁剪空间坐标
+    vec4 FragPosLightSpace; //当前像素在光源视角下的裁剪空间坐标
 } fs_in;
 
-uniform sampler2D diffuseTexture;
-uniform sampler2D shadowMap;      // 👈 第一步生成的深度贴图
-uniform vec3 lightPos;
-uniform vec3 viewPos;
 
-float ShadowCalculation(vec4 fragPosLightSpace)
-{
-    // 1. 执行透视除法（Perspective Divide），把裁剪空间坐标转到 [-1, 1] 的 NDC 空间
-    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
-    
-    // 2. 将 NDC 坐标映射到 [0, 1] 的纹理采样坐标范围
-    projCoords = projCoords * 0.5 + 0.5;
-    
-    // 3. 取得当前像素在光源视角下的深度值
-    float currentDepth = projCoords.z;
-    
-    // 4. 从深度贴图中采样出“当年光源记录的最近深度”
-    float closestDepth = texture(shadowMap, projCoords.xy).r; 
-    
-    // 5. 核心对比：如果当前深度 > 记录的最近深度，说明被挡住了，产生阴影！
-    float shadow = currentDepth > closestDepth ? 1.0 : 0.0;
-    
-    return shadow;
-}
+//材质颜色
+uniform Material material;
+//光源颜色
+uniform Light light;
+//摄像机位置
+uniform vec3 cameraPos;
+//深度纹理
+uniform sampler2D shadowMap;
 
 void main()
 {
-    vec3 color = texture(diffuseTexture, fs_in.TexCoords).rgb;
-    vec3 normal = normalize(fs_in.Normal);
-    // ... 计算基础光照 (Ambient, Diffuse, Specular) ...
+    // ========== 1. 基础向量 ==========
+    // N：片元法线（世界空间，插值后）
+    vec3 N = normalize(fs_in.Normal);
+    // V：片元指向相机的方向
+    vec3 V = normalize(cameraPos - fs_in.FragPos);
 
-    // 计算当前像素是否处于阴影中
-    float shadow = ShadowCalculation(fs_in.FragPosLightSpace);       
-    
-    // 最终颜色 = 环境光 + (1.0 - 阴影系数) * (漫反射 + 镜面光)
-    vec3 lighting = ambient + (1.0 - shadow) * (diffuse + specular);
-    
-    FragColor = vec4(lighting, 1.0);
+    // ========== 2. 纹理颜色（Gamma 逆校正：sRGB -> 线性空间）==========
+    vec3 diffuseColor  = pow(texture(material.diffuse,  fs_in.TexCoords).rgb, vec3(2.2));
+    vec3 specularColor = texture(material.specular, fs_in.TexCoords).rgb;
+
+    // ========== 3. 环境光：恒定，不受阴影遮挡 ==========
+    vec3 ambient = light.ambient * diffuseColor;
+
+    // ========== 4. 漫反射（直接光）==========
+    vec3 L = normalize(-light.direction);          // 片元指向光源的方向
+    float diff = max(dot(N, L), 0.0);              // 法线与光线的夹角余弦
+    vec3 diffuse = light.diffuse * diff * diffuseColor;
+
+    // ========== 5. 高光（直接光）==========
+    vec3 R = reflect(-L, N);                       // 光线关于法线的反射方向
+    float spec = pow(max(dot(V, R), 0.0), material.shininess);
+    vec3 specular = light.specular * spec * specularColor;
+
+    // 直接光 = 漫反射 + 高光（这部分会被阴影遮挡）
+    vec3 direct = diffuse + specular;
+
+    // ========== 6. 阴影判断：与深度贴图比较 ==========
+    // 6.1 透视除法：光源裁剪空间 -> NDC [-1, 1]
+    vec3 projCoords = fs_in.FragPosLightSpace.xyz / fs_in.FragPosLightSpace.w;
+    // 6.2 NDC -> 纹理采样坐标 [0, 1]
+    projCoords = projCoords * 0.5 + 0.5;
+    // 6.3 当前片元在光源视角下的深度
+    float currentDepth = projCoords.z;
+    // 6.4 与深度贴图比较：加 bias 消除自阴影（Shadow Acne），3x3 PCF 柔化边缘
+    float bias = 0.005;
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / textureSize(shadowMap, 0); // 单个纹素的大小
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            // 采样周围 3x3 邻域的最近深度,邻域采样,projCoords.xy当前位置，vec2(x, y) * texelSize 3x3偏移值
+            float closestDepth = texture(shadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
+            // 当前深度比记录值更远 -> 被遮挡 -> 记 1，否则记 0
+            shadow += currentDepth - bias > closestDepth ? 1.0 : 0.0;
+        }
+    }
+    shadow /= 9.0; // 取 9 个采样点的平均值，得到柔化的阴影系数
+    // 超出阴影贴图范围的部分不判定为阴影（避免物体外被误判成黑）
+    if (projCoords.z > 1.0)
+        shadow = 0.0;
+
+    // ========== 7. 合成颜色 ==========
+    // 环境光恒定 + 直接光按阴影系数衰减
+    vec3 lighting = ambient + (1.0 - shadow) * direct;
+    // Gamma 校正：线性空间 -> sRGB
+    vec3 finalColor = pow(lighting, vec3(1.0 / 2.2));
+
+    FragColor = vec4(finalColor, 1.0);
 }
 ```
 
+
+
+```c++
+while(!glfwWindowShouldClose(window))
+{
+    float currentFrame = static_cast<float>(glfwGetTime());
+    deltaTime = currentFrame - lastFrame;
+    lastFrame = currentFrame;
+
+    processInput(window);
+
+    //两个物体都是同一个摄像机，同一个窗口进行观察，所以共用view和projection
+    glm::mat4 view = camera.GetViewMatrix();
+    float aspect = framebufferHeight > 0
+        ? static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight)
+        : 1.0f;
+    glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), aspect, 0.1f, 100.0f);
+
+    // 计算物体的模型矩阵（旋转正方体）
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::rotate(model, glm::radians(cubePitch), glm::vec3(1.0f, 0.0f, 0.0f));
+    model = glm::rotate(model, glm::radians(cubeYaw), glm::vec3(0.0f, 1.0f, 0.0f));
+    model = glm::scale(model, glm::vec3(1.0f, 1.0f, 1.0f));
+    glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(model)));
+
+    // 计算光源空间矩阵（平行光：正交投影，阴影覆盖一个长方体区域）
+    glm::mat4 lightProjection = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
+    glm::vec3 lightDir(-0.2f, -1.0f, -0.3f);
+    glm::mat4 lightView = glm::lookAt(lightPos, lightPos + lightDir, glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::mat4 lightSpaceMatrix = lightProjection * lightView;
+
+    // ============ 第一遍：从光源视角渲染深度贴图（Shadow Map）============
+    glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT); // 与深度纹理尺寸一致
+    glBindFramebuffer(GL_FRAMEBUFFER, depthMapFBO);
+    glClear(GL_DEPTH_BUFFER_BIT);
+
+    shadowShader.use();
+    shadowShader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
+    // 画正方体
+    shadowShader.setMat4("model", model);
+    glBindVertexArray(VAO);
+    glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0);
+    // 画地面
+    glBindVertexArray(groundVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // ============ 第二遍：从相机视角正常渲染 ============
+    glViewport(0, 0, framebufferWidth, framebufferHeight);
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    //绘制光源位置小方块
+    lightShader.use();
+    glm::mat4 lightModel = glm::mat4(1.0f);
+    lightModel = glm::translate(lightModel, lightPos);
+    lightModel = glm::scale(lightModel, glm::vec3(0.2f));
+    lightShader.setMat4("model", lightModel);
+    lightShader.setMat4("view", view);
+    lightShader.setMat4("projection", projection);
+    glBindVertexArray(lightCubeVAO);
+    glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0);
+    glBindVertexArray(0);
+
+    //物体对象
+    objShader.use();
+
+    objShader.setMat4("model",model);
+    objShader.setMat4("view",view);
+    objShader.setMat4("projection",projection);
+    objShader.setMat3("normalMatrix",normalMatrix);
+    objShader.setVec3("cameraPos",camera.Position);
+
+    // 阴影映射相关 uniform
+    objShader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
+    objShader.setInt("shadowMap", 2);
+
+    // 设置平行光参数（方向、颜色）
+    objShader.setVec3("light.direction", glm::vec3(-0.2f, -1.0f, -0.3f)); // 固定斜上方照射
+    objShader.setVec3("light.ambient",  glm::vec3(0.2f, 0.2f, 0.2f));
+    objShader.setVec3("light.diffuse",  glm::vec3(0.8f, 0.8f, 0.8f));
+    objShader.setVec3("light.specular", glm::vec3(1.0f, 1.0f, 1.0f));
+
+    // 设置 Material 结构体
+    objShader.setInt("material.diffuse", 0);
+    objShader.setInt("material.specular", 1);
+    objShader.setFloat("material.shininess", 64.0f);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, diffuseMap);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, specularMap);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, depthMap); // 深度贴图绑定到纹理单元 2（对应 uniform shadowMap）
+
+    //绘制物体正方体
+    glBindVertexArray(VAO);
+    glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
+    //绘制地面（同样接收阴影）
+    glBindVertexArray(groundVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+
+    glfwSwapBuffers(window);
+    glfwPollEvents();
+}
+```
+
+
+
+#### 4.工业级深度：避坑指南与四大“魔鬼细节”
+
+真实渲染中必须处理以下 **4 个工业级魔鬼细节**：
+
+##### 1.阴影粉刺（Shadow Acne）与斜率偏置
+
+- **现象：** 地面上全是像斑马线一样、密密麻麻的黑白交错条纹。
+- **原因：** 深度贴图分辨率有限（比如 1024×10241024×1024）。当光线斜着照射到地面时，多个相邻像素去查深度图，查出来的都是同一个离散深度值；而像素自己的真实深度是连续变化的。**浮点数精度稍微错位一点点，像素就会误以为自己被自己挡住了（Self-Shadowing）！**
+- **工业级解决方案（动态斜率偏置 Slope-Scaled Bias）：** 在比对深度时，主动让当前深度**扣减一个小的偏移量（Bias）**。而且这个 Bias 必须根据**光线与表面的倾斜角度动态计算**
+
+shadow += currentDepth - bias > closestDepth ? 1.0 : 0.0;
+
+
+
+##### 2.悬浮现象（Peter Panning）
+
+- **现象：** 加了 Bias 之后，粉刺消失了，但阴影和物体底部脱节了！箱子看起来像悬浮在半空中。
+- **原因：** Bias 给了太大了，把阴影整体往外推得太远。
+- **工业级解决方案（Pass 1 剔除正面 Front-Face Culling）：** 在 Pass 1 渲染深度图时，开启 **`glCullFace(GL_FRONT);`**，只把物体的**背面**写入深度图！ 由于实心物体有厚度，背面的深度天然比正面深得多，Pass 2 渲染正面时绝对不会和背面发生精度争用，**这样可以用极小的 Bias 彻底杀死粉刺，同时完全避免悬浮！**
+
+
+
+##### 3.视锥体泄漏与边缘假阴影
+
+- **现象：** 玩家看向远方超出光源照射范围的地方，屏幕边缘全部变成了假阴影；或者超出深度图边界的地方一片漆黑。
+
+- 工业级解决方案：
+
+  1. 在 C++ 端把深度纹理的环绕模式设为GL_CLAMP_TO_BORDER，并将边界颜色强行设为 `1.0`（最大深度，代表无遮挡）：
+
+  ```c++
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+  float borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+  glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
+  ```
+
+  2.在 GLSL 加入防御性截断：
+
+  if (projCoords.z > 1.0)
+          shadow = 0.0;
+
+  
+
+##### 4.硬锯齿与 PCF 软阴影核算法 (Percentage-Closer Filtering)
+
+- **现象：** 阴影边缘全是粗糙的锯齿方块（硬阴影 Hard Shadows）。
+- **原因：** 深度图采样出来的结果非 00 即 11，没有半影区（Penumbra）。
+- **工业级解决方案（PCF 3x3 滤波核）：** 不要只采样 1 个像素！**去目标 UV 周边的 3×33×3 邻域内采样 9 个点进行深度对比，然后把 9 次对比的结果求平均值！**
+
+```glsl
+float shadow = 0.0;
+// 计算单个纹理像素 (Texel) 的 UV 尺寸
+vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+
+// 遍历周边 3x3 邻域
+for(int x = -1; x <= 1; ++x) {
+    for(int y = -1; y <= 1; ++y) {
+        float pcfDepth = texture(shadowMap, projCoords.xy + vec2(x, y) * texelSize).r; 
+        shadow += currentDepth - bias > pcfDepth ? 1.0 : 0.0;        
+    }    
+}
+// 取 9 次对比的平均值，瞬间得到边缘极度丝滑柔和的半影软阴影！
+shadow /= 9.0;
+```
+
+
+
+#### 5.总结
+
+这就是现代游戏引擎中阴影映射（Shadow Mapping）的全貌：
+
+1. **核心逻辑：** 两次绘制。Pass 1 从光源视角拍深度照片；Pass 2 从玩家视角查照片比大小。
+
+2. **判断准则：** 当前像素真实距离 Dcurrent−Bias>*D*current−Bias> 深度照片记录距离 Dclosest  ⟹  *D*closest⟹ **阴影！**
+
+3. ##### 三大神器：
+
+   - **动态斜率 Bias** 杀死阴影粉刺；
+   - **正面剔除 (Front-Face Culling)** 杀死悬浮；
+   - **PCF 3x3 滤波** 杀死边缘锯齿！
+
+
+
+
+
+## 第二十五章.法线贴图(Normal Mapping)
+
+在之前的渲染中，如果你想画一面“凹凸不平的破旧砖墙”，唯一的方法是往模型里**塞入成千上万个三角形顶点**去雕刻砖缝。这会导致显卡顶点数量暴胀，帧率断崖式下跌。
+
+而 **法线贴图（Normal Mapping）** 的伟大之处在于：**它允许我们使用一个只有 2 个三角形的完全平整的平面，通过“欺骗光照计算”，呈现出极其惊人的凹凸立体感！**
+
+
+
+#### 1.核心思想
+
+平整的墙为什么看起来像凸起的？ 物理学告诉你：**人眼是个极其愚蠢的器官。我们的大脑根本看不清 3D 物体的真实几何形状，我们大脑判断凹凸的唯一依据，是【光影的明暗交替】！**
+
+
+
+在冯氏光照模型中，决定一个像素点是亮还是暗的核心公式是**点积（Dot Product）**：
+
+##### 									亮度=max(*N*⋅*L*,0)
+
+- N⃗*N*（Normal）：表面的法线方向（决定脸朝哪个方向）。
+- L⃗*L*（Light）：指向光源的方向。
+
+
+
+如果 N⃗*N* 永远朝向正上方 (0,0,1)(0,0,1)： 不管光怎么照，平面上每个点算出来的亮度都一模一样，人眼一看：“切，不就是张毫无生气的平整纸片吗？”
+
+**妙计：** 如果我们能偷梁换柱，**让平整平面上每一个像素的“假法线 N”稍微歪一点点**：
+
+- 砖块边缘的法线向左歪一点 →→ 光照打上去立刻产生阴影。
+- 砖缝深处的法线向右歪一点 →→ 产生高光。
+
+
+
+##### 只需改变法线 N，平整的纸片瞬间就能呈现出凹凸万丈的立体感！这就是法线贴图的灵魂。
+
+每一个像素的法线向量来源于哪里？**直接将每个像素的rgb当作法线向量**
+
+
+
+妙计虽好，但立刻遇到了一个**物理学灾难**。
+
+我们在着色器里计算光照时，所有的向量（光线方向 L⃗*L*、视角方向 V⃗*V*）都是在**世界空间（World Space）**里算得好好的。 但是，你的砖墙贴图是贴在平整面上的，贴图里的法线向量（比如红色代表 X\*X\* 轴右，绿色代表 Y\*Y\* 轴上）是基于**图片自身局部平面（UV 空间）**的。
+
+- **灾难：** 如果把法线贴图直接丢进世界空间里去算： 当玩家走到墙的背面，或者把这堵墙旋转 90 度贴在天花板上时，原本指“上”的绿色法线突然变成了指“前”，整堵墙的光影瞬间崩塌、发黑、穿帮！
+
+**如何解决？** 我们需要发明一个**“万能局部坐标系”**——不管这堵墙怎么旋转、怎么扭曲、甚至贴在会变形的角色手臂上，这个局部坐标系永远紧紧贴在砖块的表面。 这个伟大的局部坐标系，就叫 **切线空间（Tangent Space）**！
+
+
+
+#### 2.核心架构
+
+想象你手里有一张平整的布（或者一张世界地图）。 这张布有两个方向的坐标：
+
+1. **横向的 U 方向**（向右延伸）
+2. **纵向的 V 方向**（向上延伸）
+
+当你把这张布**贴在一个 3D 的曲面（比如球体或者捏扁揉圆的角色模型）**上时：
+
+- **切线（Tangent, T⃗\*T\*）：** 就是**当你在 3D 空间里沿着贴图的 U（横向）方向走一步时，3D 空间里的坐标会朝哪个方向变化**。它永远平行于纹理的横向。
+- **副切线（Bitangent, B⃗\*B\*）：** 就是**当你在 3D 空间里沿着贴图的 V（纵向）方向走一步时，3D 空间里的坐标会朝哪个方向变化**。它永远平行于纹理的纵向。
+
+再加上法线，就形成了在切线空间里，每一个顶点都有三个互相垂直的亲兄弟轴：
+
+1. Z轴（Normal, N）：永远垂直于表面，指向你的眼睛（法线）。
+2. X轴（Tangent, T）：永远顺着纹理贴图的 **U（横向）** 方向。
+3. Y轴（Bitangent, B）：永远顺着纹理贴图的 **V（纵向）** 方向。
+
+这三个向量组合在一起，就构成了大名鼎鼎的 **TBN 矩阵（Tangent-Bitangent-Normal Matrix）**。 它的特工使命极其纯粹：**充当翻译官。它能把世界空间的光线方向，瞬间翻译成切线空间里的方向；或者把法线贴图里的局部法线，翻译回世界空间！**
+
+
+
+#### 3.TBN矩阵传输
+
+在 C++ 端，为了在顶点着色器中构建 TBN 矩阵，我们除了位置、法线、UV 之外，还必须在导入模型时**计算出每一个顶点的切线（Tangent）和副切线（Bitangent）**：
+
+
+
+在 3D 软件里，模型是由无数个**三角形**组成的。每个三角形有 3 个顶点（P1,P2,P3），并且每个顶点都有对应的纹理坐标（UV1,UV2,UV3）。
+
+我们能不能利用这个三角形在 **3D 空间里的位移** 和它在 **2D 纹理里的 UV 差值**，反推出切线 T 呢？
+
+
+
+假设在三角形表面，3D 空间的位置变化量（ΔPΔ*P*）是由 2D 纹理坐标的变化量（ΔUΔ*U* 和 ΔVΔ*V*）线性组合出来的：
+
+- 向量边 1：E*1=*P*2−*P*1，它对应的 UV 变化是 Δ*U*1 和 Δ*V1。
+- 向量边 2：E*2=*P*3−*P*1，它对应的 UV 变化是 Δ*U*2 和 Δ*V2。
+
+
+
+根据线性关系，我们可以写出这样一个矩阵方程：
+
+$$
+\begin{aligned}
+\vec{E}_1 &= \Delta U_1 \vec{T} + \Delta V_1 \vec{B}_{uv} \\
+\vec{E}_2 &= \Delta U_2 \vec{T} + \Delta V_2 \vec{B}_{uv}
+\end{aligned}
+$$
+
+如果先按向量形式写成矩阵乘法，就是：
+
+$$
+\begin{bmatrix}
+\vec{E}_1 \\
+\vec{E}_2
+\end{bmatrix}
+=
+\begin{bmatrix}
+\Delta U_1 & \Delta V_1 \\
+\Delta U_2 & \Delta V_2
+\end{bmatrix}
+\begin{bmatrix}
+\vec{T} \\
+\vec{B}_{uv}
+\end{bmatrix}
+$$
+
+由于 $\vec{E}_1$、$\vec{E}_2$、$\vec{T}$、$\vec{B}_{uv}$ 都是三维向量，真正计算时可以把它展开成 x、y、z 三个分量：
+
+$$
+\begin{bmatrix}
+E_{1x} & E_{1y} & E_{1z} \\
+E_{2x} & E_{2y} & E_{2z}
+\end{bmatrix}
+=
+\begin{bmatrix}
+\Delta U_1 & \Delta V_1 \\
+\Delta U_2 & \Delta V_2
+\end{bmatrix}
+\begin{bmatrix}
+T_x & T_y & T_z \\
+B_{uvx} & B_{uvy} & B_{uvz}
+\end{bmatrix}
+$$
+
+我们的目标是先求出 $\vec{T}$（切线）和原始的 $\vec{B}_{uv}$（由 UV 的 V 方向解出的副切线参考方向）。根据线性代数，只要在方程两边**乘以 2D 纹理矩阵的逆矩阵（Inverse Matrix）**，就能把它们解出来。
+
+先把 2D 纹理矩阵记为 $A$：
+
+$$
+A =
+\begin{bmatrix}
+\Delta U_1 & \Delta V_1 \\
+\Delta U_2 & \Delta V_2
+\end{bmatrix}
+$$
+
+它的行列式为：
+
+$$
+\det(A) = \Delta U_1 \Delta V_2 - \Delta U_2 \Delta V_1
+$$
+
+所以它的逆矩阵为：
+
+$$
+A^{-1}
+=
+\frac{1}{\Delta U_1 \Delta V_2 - \Delta U_2 \Delta V_1}
+\begin{bmatrix}
+\Delta V_2 & -\Delta V_1 \\
+-\Delta U_2 & \Delta U_1
+\end{bmatrix}
+$$
+
+两边左乘 $A^{-1}$：
+
+$$
+\begin{bmatrix}
+T_x & T_y & T_z \\
+B_{uvx} & B_{uvy} & B_{uvz}
+\end{bmatrix}
+=
+\frac{1}{\Delta U_1 \Delta V_2 - \Delta U_2 \Delta V_1}
+\begin{bmatrix}
+\Delta V_2 & -\Delta V_1 \\
+-\Delta U_2 & \Delta U_1
+\end{bmatrix}
+\begin{bmatrix}
+E_{1x} & E_{1y} & E_{1z} \\
+E_{2x} & E_{2y} & E_{2z}
+\end{bmatrix}
+$$
+
+因此可以得到 UV 方程下的向量求解式：
+
+$$
+\begin{aligned}
+\vec{T}
+&=
+\frac{1}{\Delta U_1 \Delta V_2 - \Delta U_2 \Delta V_1}
+(\Delta V_2 \vec{E}_1 - \Delta V_1 \vec{E}_2) \\
+\vec{B}_{uv}
+&=
+\frac{1}{\Delta U_1 \Delta V_2 - \Delta U_2 \Delta V_1}
+(-\Delta U_2 \vec{E}_1 + \Delta U_1 \vec{E}_2)
+\end{aligned}
+$$
+
+但是最终用于 TBN 矩阵的副切线，一般不直接使用这个原始 $\vec{B}_{uv}$。更稳妥的做法是先把切线相对法线正交化，再用法线和切线叉乘得到真正参与 TBN 的 $\vec{B}$：
+
+$$
+\begin{aligned}
+\vec{T} &= normalize(\vec{T} - (\vec{N} \cdot \vec{T})\vec{N}) \\
+\vec{B} &= normalize(cross(\vec{N}, \vec{T}))
+\end{aligned}
+$$
+
+对应到代码里的 `f`，就是：
+
+$$
+\begin{aligned}
+f &= \frac{1}{\Delta U_1 \Delta V_2 - \Delta U_2 \Delta V_1} \\
+\vec{T} &= f(\Delta V_2 \vec{E}_1 - \Delta V_1 \vec{E}_2) \\
+\vec{B} &= normalize(cross(\vec{N}, \vec{T}))
+\end{aligned}
+$$
+
+
+
+```c++
+//假设我们在 C++ 中手动为一个三角形计算 Tangent 和 Bitangent
+glm::vec3 edge1 = pos2 - pos1;
+glm::vec3 edge2 = pos3 - pos1;
+glm::vec2 deltaUV1 = uv2 - uv1;
+glm::vec2 deltaUV2 = uv3 - uv1;
+glm::vec3 normal = glm::normalize(glm::cross(edge1, edge2));
+
+float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
+
+glm::vec3 tangent;
+tangent.x = f * (deltaUV2.y * edge1.x - deltaUV1.y * edge2.x);
+tangent.y = f * (deltaUV2.y * edge1.y - deltaUV1.y * edge2.y);
+tangent.z = f * (deltaUV2.y * edge1.z - deltaUV1.y * edge2.z);
+tangent = tangent - normal * glm::dot(normal, tangent);
+tangent = glm::normalize(tangent);
+
+glm::vec3 bitangent = glm::normalize(glm::cross(normal, tangent));
+
+//把Tangent 和 Bitangent 像普通 VBO 属性一样送入显卡，绑定到 Location 3 和 4
+```
+
+
+
+#### 4.Shader源码实现：在切线空间中计算光照
+
+在法线贴图的实现中，有两种常见策略：
+
+1. **方案 A：** 把光线方向（LightDir）和视线方向（ViewDir）通过 TBN 矩阵**变换到切线空间**中，与法线贴图直接点积。
+2. **方案 B：** 把法线贴图解包出的法线通过 TBN*TBN* 矩阵**变换到世界空间**中。
+
+在现代游戏引擎中，**方案 A（把光照向量转换到切线空间）** 效率最高，因为所有的顶点都转换好了，片段着色器直接拿来用。
+
+```glsl
+# version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec2 aTexCoords;
+layout (location = 3) in vec3 aTangent;   // 👈 切线向量
+layout (location = 4) in vec3 aBitangent; // 👈 副切线向量
+
+out VS_OUT {
+    vec3 FragPos;
+    vec2 TexCoords;
+    vec3 TangentLightPos;
+    vec3 TangentViewPos;
+    vec3 TangentFragPos;
+} vs_out;
+
+uniform mat4 projection;
+uniform mat4 view;
+uniform mat4 model;
+
+uniform vec3 lightPos;
+uniform vec3 viewPos;
+
+void main() {
+    vec4 worldPos = model * vec4(aPos, 1.0);
+    vs_out.FragPos = vec3(worldPos);
+    vs_out.TexCoords = aTexCoords;
+
+    // 1. 将法线、切线、副切线变换到世界空间，并消除不等比缩放的影响
+    //因为当模型发生“非等比缩放（Non-uniform Scaling）”或者“剪切变形”时，切线和副切线也会和法线一样发生方向畸变！它们必须享受同等待遇的数学矫正。
+    mat3 normalMatrix = transpose(inverse(mat3(model)));
+    vec3 N = normalize(normalMatrix * aNormal); //这个是之前的基础光照的世界空间的法线求解，同样的T,B和N同处一个局部空间，所以同乘一个矩阵
+    vec3 T = normalize(normalMatrix * aTangent);
+    vec3 B = normalize(normalMatrix * aBitangent);
+    
+    // 2. 构造正交归一化的 TBN 矩阵 (World-to-Tangent 矩阵)
+    mat3 TBN = transpose(mat3(T, B, N)); 
+
+    // 3. 将 光源位置、观察位置、当前片段位置 全部变换到【切线空间】中！
+    vs_out.TangentLightPos = TBN * lightPos;
+    vs_out.TangentViewPos  = TBN * viewPos;
+    vs_out.TangentFragPos  = TBN * vs_out.FragPos;
+
+    gl_Position = projection * view * worldPos;
+}
+```
+
+
+
+```glsl
+#version 330 core
+
+out vec4 FragColor;
+
+// 光照参数结构体：本 demo 只用了一个点光源。
+struct Light {
+    vec3 ambient;   // 环境光强度（不随距离衰减）
+    vec3 diffuse;   // 漫反射强度
+    vec3 specular;  // 镜面高光强度
+};
+
+// 材质参数结构体。
+struct Material {
+    sampler2D normalMap; // 法线贴图：用颜色编码法线方向，制造表面凹凸
+    vec3 diffuseColor;   // 漫反射基础颜色（本 demo 为纯色砖红）
+    float shininess;     // 高光锐度（越大，高光越集中）
+};
+
+// 顶点着色器传来的数据（都是已经变换到切线空间的值）。
+// 在切线空间计算光照，才能让法线贴图中的法线与光线、视线处于同一坐标系。
+in VS_OUT {
+    vec3 FragPos;           // 片元世界坐标（本 demo 未直接使用）
+    vec2 TexCoords;         // 纹理坐标，用于采样法线贴图
+    vec3 TangentLightPos;   // 光源位置（切线空间）
+    vec3 TangentCameraPos;  // 相机位置（切线空间）
+    vec3 TangentFragPos;    // 片元位置（切线空间）
+} fs_in;
+
+uniform Material material;
+uniform Light light;
+
+void main()
+{
+    // 1. 从法线贴图中采样颜色 (RGB 范围是 0.0 ~ 1.0),
+    vec3 N = texture(material.normalMap, fs_in.TexCoords).rgb;
+
+    // 2. 解包 (Unpack)：把 [0, 1] 的颜色映射回 [-1, 1] 的真实法线向量空间
+    N = normalize(N * 2.0 - 1.0);
+
+    // 3. 获取切线空间下的光线方向与视线方向
+    vec3 L = normalize(fs_in.TangentLightPos - fs_in.TangentFragPos);
+    vec3 V = normalize(fs_in.TangentCameraPos - fs_in.TangentFragPos);
+    vec3 H = normalize(L + V);
+
+    // 4. 计算光照分量：
+    //    先对漫反射颜色做 gamma 逆校正（pow 2.2），因为最终输出还会做一次 gamma 校正，
+    //    中间的光照计算需要在线性空间进行，避免颜色失真。
+    vec3 diffuseColor = pow(material.diffuseColor, vec3(2.2));
+
+    //    diffuse：法线与光线的夹角越接近 0°，漫反射越强（Lambert 定律）。
+    float diff = max(dot(N, L), 0.0);
+
+    //    spec：Blinn-Phong 模型，用半程向量 H 与法线 N 的点积计算镜面高光。
+    float spec = pow(max(dot(N, H), 0.0), material.shininess);
+
+    // 5. 点光源距离衰减：光强随距离增大按二次曲线快速减弱。
+    float lightDistance = length(fs_in.TangentLightPos - fs_in.TangentFragPos);
+    float attenuation = 1.0 / (1.0 + 0.22 * lightDistance + 0.20 * lightDistance * lightDistance);
+
+    // 6. 合成光照：环境光 + (漫反射 + 高光) × 距离衰减。
+    vec3 ambient = light.ambient * diffuseColor;
+    vec3 diffuse = light.diffuse * diff * diffuseColor;
+    vec3 specular = light.specular * spec;
+    vec3 lighting = ambient + (diffuse + specular) * attenuation;
+
+    // 7. gamma 校正：把线性光照结果映射回 sRGB 显示空间（pow 1/2.2）。
+    vec3 finalColor = pow(lighting, vec3(1.0 / 2.2));
+
+    // 8. 输出最终颜色，alpha 恒为 1.0（不透明）。
+    FragColor = vec4(finalColor, 1.0);
+}
+```
+
+
+
+##### 法线贴图核心总结
+
+1. **核心原理：** 
+
+   欺骗光照。用一张记录了微小向量偏移的纹理（Normal Map），代替原本平整的几何面法线参与 `dot(N, L)` 计算。
+
+   我们把因果链条梳理顺：
+
+   1. **源头（法线贴图）：** 它是现成的纹理，里面存了成千上万个微小的假法线（比如砖缝深处法线歪了）。
+   2. **桥梁（TBN 矩阵）：** 因为光线和视线在世界空间，法线贴图在局部空间。我们用 TBN 把光线和视线“翻译”进切线空间。
+   3. **审判（光照计算）：** 在每一个像素点上，我们用**法线贴图里解包出来的假法线**，去和翻译过来的光线、视线做点积。
+
+   **结果：** 每一个像素点因为法线方向各不相同，算出来的亮度和高光也完全不同，最终在毫无起伏的纸片平面上，骗过了我们的大脑，造出了完美的立体凹凸感（法线贴图渲染）！
+
+​		
+
+​	法线贴图（Normal Map）里到底长什么样？
+
+​	想象一下，你用 Photoshop 打开了一张法线贴图（比如砖墙的 Normal Map）。
+
+- 这张图片长得极其诡异，通体呈现出一种**耀眼的浅蓝色（RGB 颜色大约是 `R=128, G=128, B=255`）**。
+- 为什么是蓝色的？ 因为在图片的每一个像素点（Pixel）里：
+  - **R 通道（红色）** 代表 X 轴的偏转。
+  - **G 通道（绿色）** 代表 Y 轴的偏转。
+  - **B 通道（蓝色）** 代表 Z 轴（永远朝外）。
+  - 纯正的浅蓝色代表法线毫无偏转（即 `(0, 0, 1)`）。
+  - **而当遇到砖缝或凹陷处时，图片的像素颜色会变成紫色、粉色或青色！** 这代表这个像素处的法线故意向左或向下歪了。
+
+​	一张 1024×10241024×1024 的法线贴图，里面有 **100 万个像素格子**，每一个格子都存着一个不同的微小偏转向量。**这就是“成千上万个微小的假法线”的真正藏身之处！**，就是把像素点的RGB当作法线
+
+
+
+2.关键步骤：
+
+- **解包（Unpack）：** `normal = normalize(texture(normalMap, UV).rgb * 2.0 - 1.0);` 把显存里的 [[0](http://localhost:3782/home/unified_1786503632384_b865d44c#references), [1](http://localhost:3782/home/unified_1786503632384_b865d44c#references)] 颜色还原成数学上的 `[-1, 1]` 向量。
+- **TBN 矩阵：** 把世界空间的坐标转换到局部的切线空间，使得法线贴图能够完美适应任意旋转和复杂弯曲的 3D 模型。
+
+
+
+
+
+## 第二十六章.视差贴图(Parallax Mapping)
+
+**视差贴图 (Parallax Mapping)**（也叫高度贴图 / Relief Mapping）
+
+​		在法线贴图中，虽然我们通过假法线骗过了光照（有了明暗凹凸），但**如果你把镜头贴近砖墙去看它的边缘，你会发现它依然是一个惨不忍睹的绝对平整纸片！** 砖块不会挡住后面的砖块，也没有真正的物理错位。
+
+而 **视差贴图** 允许我们在片段着色器中，**通过一张黑白的“高度图（Height Map）”，动态偏移 UV 采样坐标**，让像素产生真实的“遮挡位移”。
+
+
+
+#### 1.核心思想
+
+- **法线贴图的局限：** 法线贴图只改变了光照计算中的 N⃗*N*（法线），但**没有改变纹理采样的 UV 坐标**。 当你走到侧面观察时，你会发现砖墙边缘的轮廓依然是笔直的一条线，毫无立体结构可言。
+- **视差贴图的野望：** 我们希望给每个像素赋予一张**高度图（Height Map，黑白图，白色代表凸起，黑色代表凹陷）**。当摄像机斜着看过去时，**视觉视线（View Direction）会和高度图相交，从而在视觉上把 UV 坐标“往前或往后拉伸”**，让凹陷处的像素显示出被遮挡的深处纹理！
+
+
+
+#### 2.核心架构
+
+##### 核心数学原理：视差偏移（Parallax Offset Calculation）
+
+
+
+想象一下：你在现实中站在一口深井的边缘，往下看井底的石头。
+
+- 如果你**正对着井口向下看**（视线垂直于地面），石头就是它原本的位置，没有任何位移。
+
+- 如果你
+
+  走到井边，斜着眼睛往井底深处看
+
+  ：
+
+  - 因为井有深度（h*h*），你的视线被井壁挡了一段。
+  - 在你的眼里，井底的石头会产生一个**“视觉上的水平错位（偏移量 P**P**）”**——石头看起来好像向旁边移了一段距离。
+
+视差贴图的数学公式，就是在计算机里**完美复现这种“斜眼看深坑时的视觉错位”**！
+
+
+
+1. 已知条件：
+
+   - 视线方向 V⃗*V*（在切线空间中，由视线向量乘 TBN 矩阵得到）。
+
+   - 当前像素的纹理坐标 
+     $$
+     UVcurrent
+     $$
+
+   - 高度贴图采样出的高度值 
+     $$
+     h=texture(heightMap, UV).r
+     $$
+     （范围 0.0∼1.00.0∼1.0，11 代表最高，00 代表最深凹陷）。
+
+2. **偏移公式：** 我们希望凹陷越深（h*h* 越小），UV 偏移得越厉害。同时，视线越倾斜（夹角越小），偏移量也应该越大。 视差偏移量的计算公式为：
+
+$$
+heightScale = 0.1 \quad (\text{控制凹陷深度强度})
+$$
+
+
+$$
+P = \frac{\vec{V}_{xy}}{\vec{V}_z} \times (h \times heightScale)
+$$
+
+> **分量展开**：$\vec{V}_{xy}$ 是视线向量 $\vec{V}$ 的水平分量（沿贴图切平面方向），$\vec{V}_z$ 是它的深度分量（沿表面法线方向）。GLSL 里写作 `viewDir.xy / viewDir.z`，即逐分量相除：
+> $$
+> \frac{\vec{V}_{xy}}{\vec{V}_z} = \left( \frac{V_x}{V_z},\ \frac{V_y}{V_z} \right)
+> $$
+
+$$
+UV_{final} = UV_{current} -P
+$$
+
+- *h*：从高度图中采样出来的当前点的高度值（范围 0.0∼1.00.0∼1.0）。
+- **heightScale**：控制整体凹陷强度的放大系数（比如 `0.1`）。
+- **含义：** h×heightScale 代表当前这个像素对应的**实际物理下陷深度**。坑越深，等会儿视线偏移得越厉害。
+
+这里的 V是**视线方向向量（View Direction）**，并且是在**切线空间**中计算的。
+
+- *V*z：视线在垂直方向（朝外）的分量。
+- *V**x**y*：视线在水平方向（平面上）的分量。
+- **为什么要用 Vxy/Vz 做除法？** 这是一个完美的初中几何相似三角形原理：
+  - 当你**垂直向下看**时（视线几乎平行于 Z 轴）：V**x**y≈0，分子为 0，所以偏移量 **P**=0。**（正着看，没有视差错位！）**
+  - 当你极度斜着看时（视线几乎平行于平面）：Vz变得非常接近 0，分母变成一个极小的数。 分母越小，整体商Vxy/Vz就会变得巨大无比！
+    - **物理意义：** 视线越平缓（斜着看），同一个深度的坑在视觉上产生的水平错位就会**拉得越长**！这就是为什么斜着看时视差效果最强烈的原因。
+
+
+
+#### 3.代码
+
+在片段着色器中，我们在采样漫反射和法线贴图之前，**先用高度图对 UV 坐标进行一次“视差偏移”**：
+
+```glsl
+# version 330 core
+out vec4 FragColor;
+
+in VS_OUT {
+    vec3 FragPos;
+    vec2 TexCoords;
+    vec3 TangentLightPos;
+    vec3 TangentViewPos;
+    vec3 TangentFragPos;
+} fs_in;
+
+uniform sampler2D diffuseMap;
+uniform sampler2D normalMap;
+uniform sampler2D depthMap; // 👈 高度图 / 深度图 (Height Map)
+
+uniform float height_scale; // 凹陷深度控制系数 (例如 0.1)
+
+// 基础视差映射：计算偏移后的 UV 坐标
+vec2 ParallaxMapping(vec2 texCoords, vec3 viewDir) {
+    // 1. 从高度图中采样当前点的深度/高度 (白色凸起，黑色凹陷)
+    float height = texture(depthMap, texCoords).r;    
+    
+    // 2. 核心公式：根据视线方向与高度计算 UV 偏移量
+    // 注意：这里用 viewDir.xy 除以 viewDir.z，视线越平缓，偏移越大
+    vec2 p = viewDir.xy / viewDir.z * (height * height_scale);
+    
+    // 3. 用当前 UV 减去偏移量，得到新的采样 UV
+    return texCoords - p;
+}
+
+void main() {
+    // 1. 将世界空间的视线方向转换到切线空间，并归一化
+    vec3 viewDir = normalize(fs_in.TangentViewPos - fs_in.TangentFragPos);
+    
+    // 2. 👈 核心：调用视差映射函数，得到被偏移后的“错位 UV”！
+    vec2 aliasedTexCoords = ParallaxMapping(fs_in.TexCoords, viewDir);
+
+    // 防御性越界检查：如果偏移后的 UV 超出了 [0, 1] 范围，直接丢弃或不采样
+    if(aliasedTexCoords.x > 1.0 || aliasedTexCoords.x < 0.0 || 
+       aliasedTexCoords.y > 1.0 || aliasedTexCoords.y < 0.0)
+        discard;
+
+    // 3. 带着“偏移后的 UV”去采样法线贴图和漫反射贴图！
+    vec3 normal = texture(normalMap, aliasedTexCoords).rgb;
+    normal = normalize(normal * 2.0 - 1.0);   
+    vec3 color = texture(diffuseMap, aliasedTexCoords).rgb;
+
+    // ... 后续正常计算光照 (Ambient, Diffuse, Specular) ...
+}
+```
+
+
+
+
+
+#### 4.从基础视差到“陡峭视差 (Steep Parallax)”与“视差遮挡 (Parallax Occlusion)”
+
+基础视差贴图有一个致命缺点：**当高度图的凹陷非常深、或者视线极度倾斜时，单次采样计算出来的偏移会严重失真，产生类似锯齿状的撕裂。**
+
+为了解决这个问题，现代图形学演化出了两大高级变体：
+
+##### 1. 陡峭视差映射 (Steep Parallax Mapping)
+
+- **原理：** 既然单次采样不准，我们就把视线光线**切成 N\*N\* 个等长的步长（比如 10 层）**。
+- **过程：** 在循环中，一层一层往下走，直到某一层的高度低于当前层的深度值，立刻停下，把这个交点作为最终的 UV。
+- **效果：** 凹陷处的几何遮挡变得非常真实，砖缝里能看到真正的阴影层次。
+
+##### 2. 视差遮挡映射 (Parallax Occlusion Mapping, POM)
+
+- **原理：** 结合了陡峭视差的“多层步进”，并在找到前后两层（穿透点前后）之后，**在两层之间进行一次线性插值（Linear Interpolation）**。
+- **效果：** 彻底消除了陡峭视差的分层阶梯感，达到了近乎 100% 逼真的微观几何错位效果（3A 游戏标准配置）。
+
+------
+
+
+
+#### 💡 视差贴图核心总结
+
+1. **核心目标：** 解决法线贴图“边缘依然是平整纸片”的穿帮问题。
+2. **底层武器：** 一张黑白**高度图（Height Map）**。
+3. **实现秘诀：** 在片段着色器中，利用**视线方向与高度值**动态偏移 UV 坐标，让像素在视觉上发生“物理错位”。
+
+搞懂了视差贴图（Parallax Mapping）如何用数学错觉创造出微观几何结构后，我们接下来正式进入下一个重磅高级章节： 👉 **HDR 与 Bloom (高动态范围渲染与泛光特效)**

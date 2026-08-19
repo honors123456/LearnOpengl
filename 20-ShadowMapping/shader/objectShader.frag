@@ -3,19 +3,7 @@
 out vec4 FragColor;
 
 struct Light {
-    int type;            // 0=平行光 1=点光源 2=聚光灯
-
-    vec3 position;       // 点光源/聚光灯的位置
-
-    vec3 direction;      // 平行光/聚光灯的照射方向（从光源射向场景）
-
-    float cutOff;        // 聚光灯内锥角余弦
-    float outerCutOff;   // 聚光灯外锥角余弦
-
-    float constant;      // 衰减常数项
-    float linear;        // 衰减一次项
-    float quadratic;     // 衰减二次项
-
+    vec3 direction;      // 平行光照射方向（从光源射向场景）
     vec3 ambient;        // 环境光
     vec3 diffuse;        // 漫反射
     vec3 specular;       // 高光
@@ -44,130 +32,66 @@ uniform vec3 cameraPos;
 
 uniform sampler2D shadowMap;
 
-// 平行光：方向全局一致，无位置、无衰减
-vec3 CalcDirectional(vec3 N, vec3 V, vec3 diffuseColor, vec3 specularColor)
+void main()
 {
-    //环境光
-    vec3 L = normalize(-light.direction);          // 指向光源
-    vec3 ambient  = light.ambient  * diffuseColor;
+    // ========== 1. 基础向量 ==========
+    // N：片元法线（世界空间，插值后）
+    vec3 N = normalize(fs_in.Normal);
+    // V：片元指向相机的方向
+    vec3 V = normalize(cameraPos - fs_in.FragPos);
 
-    //漫反射
-    float diff = max(dot(N, L), 0.0);
-    vec3 diffuse  = light.diffuse  * diff * diffuseColor;
+    // ========== 2. 纹理颜色（Gamma 逆校正：sRGB -> 线性空间）==========
+    vec3 diffuseColor  = pow(texture(material.diffuse,  fs_in.TexCoords).rgb, vec3(2.2));
+    vec3 specularColor = texture(material.specular, fs_in.TexCoords).rgb;
 
-    //高光反射
-    vec3 R = reflect(-L, N);
+    // ========== 3. 环境光：恒定，不受阴影遮挡 ==========
+    vec3 ambient = light.ambient * diffuseColor;
+
+    // ========== 4. 漫反射（直接光）==========
+    vec3 L = normalize(-light.direction);          // 片元指向光源的方向
+    float diff = max(dot(N, L), 0.0);              // 法线与光线的夹角余弦
+    vec3 diffuse = light.diffuse * diff * diffuseColor;
+
+    // ========== 5. 高光（直接光）==========
+    vec3 R = reflect(-L, N);                       // 光线关于法线的反射方向
     float spec = pow(max(dot(V, R), 0.0), material.shininess);
     vec3 specular = light.specular * spec * specularColor;
-    
-    return ambient + diffuse + specular;
-}
 
-// 点光源：有位置、有衰减，无方向
-vec3 CalcPoint(vec3 N, vec3 V, vec3 diffuseColor, vec3 specularColor)
-{
-    //计算距离衰减系数
-    float dist = length(light.position - fs_in.FragPos);
-    float attenuation = 1.0 / (light.constant + light.linear * dist + light.quadratic * dist * dist);
+    // 直接光 = 漫反射 + 高光（这部分会被阴影遮挡）
+    vec3 direct = diffuse + specular;
 
-    //环境光
-    vec3 L = normalize(light.position - fs_in.FragPos);  // 指向光源
-    vec3 ambient  = light.ambient  * diffuseColor  * attenuation;
-
-    //漫反射
-    float diff = max(dot(N, L), 0.0);
-    vec3 diffuse  = light.diffuse  * diff * diffuseColor  * attenuation;
-
-    //高光反射
-    vec3 R = reflect(-L, N);
-    float spec = pow(max(dot(V, R), 0.0), material.shininess);
-    vec3 specular = light.specular * spec * specularColor * attenuation;
-
-    return ambient + diffuse + specular;
-}
-
-// 聚光灯：有位置、有衰减，还受光锥限制
-vec3 CalcSpot(vec3 N, vec3 V, vec3 diffuseColor, vec3 specularColor)
-{
-    //计算距离衰减系数
-    float dist = length(light.position - fs_in.FragPos);
-    float attenuation = 1.0 / (light.constant + light.linear * dist + light.quadratic * dist * dist);
-
-    //环境光
-    vec3 L = normalize(light.position - fs_in.FragPos);  // 指向光源
-    vec3 ambient  = light.ambient  * diffuseColor  * attenuation;
-
-     // 光锥判定：片元指向光源的方向 与 光源照射方向 的夹角
-    float theta = dot(L, normalize(-light.direction));
-    float epsilon = light.cutOff - light.outerCutOff;
-    float intensity = clamp((theta - light.outerCutOff) / epsilon, 0.0, 1.0);
-    
-    //漫反射
-    float diff = max(dot(N, L), 0.0);
-    vec3 diffuse  = light.diffuse  * diff * diffuseColor  * attenuation * intensity;
-
-    //高光反射
-    vec3 R = reflect(-L, N);
-    float spec = pow(max(dot(V, R), 0.0), material.shininess);
-    vec3 specular = light.specular * spec * specularColor * attenuation * intensity;
-
-    return ambient + diffuse + specular;
-}
-
-// 阴影计算：把片元变换到光源视角，与深度贴图比较，判断是否被遮挡
-float ShadowCalculation(vec4 fragPosLightSpace)
-{
-    // 1. 透视除法：裁剪空间坐标 -> NDC [-1, 1]
-    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
-    // 2. NDC -> 纹理采样坐标 [0, 1]
+    // ========== 6. 阴影判断：与深度贴图比较 ==========
+    // 6.1 透视除法：光源裁剪空间 -> NDC [-1, 1]
+    vec3 projCoords = fs_in.FragPosLightSpace.xyz / fs_in.FragPosLightSpace.w;
+    // 6.2 NDC -> 纹理采样坐标 [0, 1]
     projCoords = projCoords * 0.5 + 0.5;
-
-    // 3. 当前片元在光源视角下的深度
+    // 6.3 当前片元在光源视角下的深度，就是正方体在光源视角下的深度信息
     float currentDepth = projCoords.z;
-
-    // 4. 与深度贴图比较（加 bias 消除自阴影 Shadow Acne，用 3x3 PCF 柔化边缘）
+    // 6.4 与深度贴图比较：加 bias 消除自阴影（Shadow Acne），3x3 PCF 柔化边缘
     float bias = 0.005;
     float shadow = 0.0;
-    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+    vec2 texelSize = 1.0 / textureSize(shadowMap, 0); // 单个纹素的大小
     for (int x = -1; x <= 1; ++x)
     {
         for (int y = -1; y <= 1; ++y)
         {
+            // 采样周围 3x3 邻域的最近深度
+            //深度纹理在当前像素纹理坐标下的深度信息，因为pass 1中开启了深度测试，所以只保留了离光源最近的深度信息
             float closestDepth = texture(shadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
+            // 当前深度比记录值更远 -> 被遮挡 -> 记 1，否则记 0
             shadow += currentDepth - bias > closestDepth ? 1.0 : 0.0;
         }
     }
-    shadow /= 9.0;
-
+    shadow /= 9.0; // 取 9 个采样点的平均值，得到柔化的阴影系数
     // 超出阴影贴图范围的部分不判定为阴影（避免物体外被误判成黑）
     if (projCoords.z > 1.0)
         shadow = 0.0;
 
-    return shadow;
-}
-
-void main()
-{
-    vec3 N = normalize(fs_in.Normal);
-    vec3 V = normalize(cameraPos - fs_in.FragPos);
-
-    // 手动做 Gamma 校正的逆运算（转回线性空间）
-    vec3 diffuseColor = pow(texture(material.diffuse, fs_in.TexCoords).rgb, vec3(2.2));
-    vec3 specularColor = texture(material.specular, fs_in.TexCoords).rgb;
-
-    vec3 color;
-    if (light.type == 0)
-        color = CalcDirectional(N, V, diffuseColor, specularColor);
-    else if (light.type == 1)
-        color = CalcPoint(N, V, diffuseColor, specularColor);
-    else
-        color = CalcSpot(N, V, diffuseColor, specularColor);
-
-    // 计算阴影系数（点光源 type=1 全向发光，2D 阴影贴图不适用，直接跳过）
-    float shadow = (light.type == 1) ? 0.0 : ShadowCalculation(fs_in.FragPosLightSpace);
-
-    // 阴影区域只保留环境光，亮部保留完整光照
-    vec3 finalColor = pow(shadow * light.ambient * diffuseColor + (1.0 - shadow) * color, vec3(1.0 / 2.2));
+    // ========== 7. 合成颜色 ==========
+    // 环境光恒定 + 直接光按阴影系数衰减
+    vec3 lighting = ambient + (1.0 - shadow) * direct;
+    // Gamma 校正：线性空间 -> sRGB
+    vec3 finalColor = pow(lighting, vec3(1.0 / 2.2));
 
     FragColor = vec4(finalColor, 1.0);
 }

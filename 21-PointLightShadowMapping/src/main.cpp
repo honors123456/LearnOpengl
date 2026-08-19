@@ -2,6 +2,7 @@
 #include <GLFW/glfw3.h>
 #include <iostream>
 #include <string>
+#include <vector>
 #include <opencv2/opencv.hpp>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -9,7 +10,12 @@
 #include "../Camera/Camera.h"
 
 // 全局相机实例
-Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
+Camera camera(
+    glm::vec3(3.5f, 0.5f, 3.5f),
+    glm::vec3(0.0f, 1.0f, 0.0f),
+    -135.0f,
+    -17.0f
+);
 float lastX = 800.0f / 2.0f;
 float lastY = 600.0f / 2.0f;
 bool firstMouse = true;
@@ -18,10 +24,6 @@ float cubeYaw = 20.0f;
 float cubePitch = 20.0f;
 int framebufferWidth = 800;
 int framebufferHeight = 600;
-
-// 阴影贴图分辨率（与 depthMap 纹理尺寸一致）
-const int SHADOW_WIDTH = 800;
-const int SHADOW_HEIGHT = 600;
 
 // 时间补偿变量
 float deltaTime = 0.0f;
@@ -115,7 +117,7 @@ int main(){
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // 创建窗口，后续所有 OpenGL 绘制都会输出到这个窗口。
-    GLFWwindow* window=glfwCreateWindow(800,600,"Shadow Mapping - 平行光",nullptr,nullptr);
+    GLFWwindow* window=glfwCreateWindow(800,600,"Shadow Mapping - 点光源",nullptr,nullptr);
     if(window == nullptr)
     {
         std::cout << "Failed to create window" << std::endl;
@@ -222,7 +224,7 @@ int main(){
     Shader lightShader(SHADER_DIR "/lightShader.vert", SHADER_DIR "/lightShader.frag");
 
     //深度着色器（第一遍：从光源视角渲染，只生成 Shadow Map）
-    Shader shadowShader(SHADER_DIR "/shadowMap.vert", SHADER_DIR "/shadowMap.frag");
+    Shader shadowShader(SHADER_DIR "/shadowMap.vert", SHADER_DIR "/shadowMap.geom", SHADER_DIR "/shadowMap.frag");
 
     // 物体顶点数据：每个顶点依次包含位置、法线和纹理坐标。
     float vertices[] = {
@@ -339,28 +341,41 @@ int main(){
     glEnableVertexAttribArray(2);
     glBindVertexArray(0);
 
-    //深度信息缓冲区 FBO
-    unsigned int depthMapFBO;
-    glGenFramebuffers(1, &depthMapFBO);
+    //3D 深度立方体帧缓冲
+    // 1. 创建深度 Cubemap FBO
+    unsigned int pointShadowFBO;
+    glGenFramebuffers(1, &pointShadowFBO);
 
-    // 1. 创建一张 2D 纹理，用来专门存深度值
-    unsigned int depthMap;
-    glGenTextures(1, &depthMap);
-    glBindTexture(GL_TEXTURE_2D, depthMap);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, 800, 600, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    // 设置纹理环绕边缘为 CLARE_TO_BORDER（防止阴影边界外被无限拉伸）
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-    float borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
-    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
+    // 2. 创建 3D 立方体深度纹理（阴影贴图分辨率 1024x1024，供 Omni Shadow Map 使用）
+    const unsigned int SHADOW_WIDTH = 1024, SHADOW_HEIGHT = 1024;
+    unsigned int depthCubemap;
+    glGenTextures(1, &depthCubemap);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap);
 
-    //2.将深度纹理挂载到 FBO 的深度附件上
-    glBindFramebuffer(GL_FRAMEBUFFER, depthMapFBO);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthMap, 0);
-    glDrawBuffer(GL_NONE); // 告诉 OpenGL 我们不需要任何颜色输出！
+    // 为 Cubemap 的 6 个面分别开辟 1024x1024 的单通道浮点数显存空间
+    for (unsigned int i = 0; i < 6; ++i) {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_DEPTH_COMPONENT, 
+                    SHADOW_WIDTH, SHADOW_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    }
+
+    // 设置采样滤波与环绕模式
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE); // 👈 3D 纹理的 R 轴
+
+    // 3. 将整个 Cubemap 挂载到 FBO 的深度附件上 (使用 glFramebufferTexture 而非 2D 版本的 API)
+    glBindFramebuffer(GL_FRAMEBUFFER, pointShadowFBO);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, depthCubemap, 0);
+    glDrawBuffer(GL_NONE); // 禁用颜色输出
     glReadBuffer(GL_NONE);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "Point shadow framebuffer is not complete" << std::endl;
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     glfwSetCursorPosCallback(window, mouse_callback);
@@ -371,66 +386,87 @@ int main(){
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glEnable(GL_DEPTH_TEST);
 
-    // 光源位置（点光源/聚光灯使用；平行光只取其方向作示意）
-    glm::vec3 lightPos(1.2f, 1.0f, 2.0f);
+    // 点光源位置（在立方体上方，阴影投到地面）
+    glm::vec3 lightPos(0.0f, 2.5f, 0.0f);
 
     lastFrame = static_cast<float>(glfwGetTime());
+    // ============ 主渲染循环：每帧执行一遍 ============
     while(!glfwWindowShouldClose(window))
     {
+        // ---- 时间计算：记录本帧与上一帧的时间差 deltaTime ----
         float currentFrame = static_cast<float>(glfwGetTime());
-        deltaTime = currentFrame - lastFrame;
+        deltaTime = currentFrame - lastFrame;  // 每帧耗时（秒），用于保证移动速度与帧率无关
         lastFrame = currentFrame;
 
+        // ---- 处理键盘输入（WASD 移动相机、ESC 退出）----
         processInput(window);
 
-        //两个物体都是同一个摄像机，同一个窗口进行观察，所以共用view和projection
+        // ---- 计算相机矩阵（两个物体共用同一相机）----
         glm::mat4 view = camera.GetViewMatrix();
         float aspect = framebufferHeight > 0
             ? static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight)
             : 1.0f;
         glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), aspect, 0.1f, 100.0f);
 
-        // 计算物体的模型矩阵（旋转正方体）
+        // ---- 模型矩阵：旋转立方体（地面用单位矩阵即可）----
         glm::mat4 model = glm::mat4(1.0f);
-        model = glm::rotate(model, glm::radians(cubePitch), glm::vec3(1.0f, 0.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(cubeYaw), glm::vec3(0.0f, 1.0f, 0.0f));
-        model = glm::scale(model, glm::vec3(1.0f, 1.0f, 1.0f));
-        glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(model)));
+        model = glm::rotate(model, glm::radians(cubePitch), glm::vec3(1.0f, 0.0f, 0.0f));  // 鼠标拖动旋转（俯仰）
+        model = glm::rotate(model, glm::radians(cubeYaw),   glm::vec3(0.0f, 1.0f, 0.0f));  // 鼠标拖动旋转（偏航）
 
-        // 计算光源空间矩阵（平行光：正交投影，阴影覆盖一个长方体区域）
-        glm::mat4 lightProjection = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
-        glm::vec3 lightDir(-0.2f, -1.0f, -0.3f);
-        glm::mat4 lightView = glm::lookAt(lightPos, lightPos + lightDir, glm::vec3(0.0f, 1.0f, 0.0f));
-        glm::mat4 lightSpaceMatrix = lightProjection * lightView;
+        // ---- 光源空间矩阵（点光源：透视投影，覆盖 90 度视野的 6 个方向）----
+        float shadowAspect = (float)SHADOW_WIDTH / (float)SHADOW_HEIGHT;  // 阴影贴图宽高比
+        float nearPlane = 0.1f;   // 近裁剪面
+        float farPlane = 15.0f;   // 远裁剪面（决定阴影能投射的最远距离）
+        // 透视投影矩阵（90 度 FOV，点光源每个面覆盖 90 度视角，6 面正好覆盖 360 度）
+        glm::mat4 shadowProj = glm::perspective(glm::radians(90.0f), shadowAspect, nearPlane, farPlane);
+        
+        // 6 个方向的 Light View 矩阵（光源为眼睛，分别看向 +X -X +Y -Y +Z -Z）
+        std::vector<glm::mat4> shadowTransforms;
+        // +X (右)
+        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3( 1.0f,  0.0f,  0.0f), glm::vec3(0.0f, -1.0f,  0.0f)));
+        // -X (左)
+        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(-1.0f,  0.0f,  0.0f), glm::vec3(0.0f, -1.0f,  0.0f)));
+        // +Y (上)
+        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3( 0.0f,  1.0f,  0.0f), glm::vec3(0.0f,  0.0f,  1.0f)));
+        // -Y (下)
+        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3( 0.0f, -1.0f,  0.0f), glm::vec3(0.0f,  0.0f, -1.0f)));
+        // +Z (后)
+        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3( 0.0f,  0.0f,  1.0f), glm::vec3(0.0f, -1.0f,  0.0f)));
+        // -Z (前)
+        shadowTransforms.push_back(shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3( 0.0f,  0.0f, -1.0f), glm::vec3(0.0f, -1.0f,  0.0f)));
 
-        // ============ 第一遍：从光源视角渲染深度贴图（Shadow Map）============
-        glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT); // 与深度纹理尺寸一致
-        glBindFramebuffer(GL_FRAMEBUFFER, depthMapFBO);
-        glClear(GL_DEPTH_BUFFER_BIT);
+        // Pass 1：从光源视角渲染深度贴图（Omni Shadow Map）============
+        glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT); // viewport 对齐阴影贴图分辨率
+        glBindFramebuffer(GL_FRAMEBUFFER, pointShadowFBO); // 绑定深度 Cubemap FBO（不写颜色，只写深度）
+        glClear(GL_DEPTH_BUFFER_BIT);                      // 清空上一帧的深度
 
         shadowShader.use();
-        shadowShader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
-        // 画正方体
-        shadowShader.setMat4("model", model);
+        // 把 6 个面的 view-projection 传给几何着色器
+        for (unsigned int i = 0; i < shadowTransforms.size(); ++i) {
+            shadowShader.setMat4("shadowMatrices[" + std::to_string(i) + "]", shadowTransforms[i]);
+        }
+        shadowShader.setVec3("lightPos", lightPos);      // 片元阶段算到光源的距离
+        shadowShader.setFloat("far_plane", farPlane);    // 归一化深度用
+        // 立方体和地面都要写入深度 Cubemap（否则会漏掉阴影）
         glBindVertexArray(VAO);
+        shadowShader.setMat4("model", model);
         glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0);
-        // 画地面
+
         glBindVertexArray(groundVAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
 
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        // ============ 第二遍：从相机视角正常渲染 ============
-        glViewport(0, 0, framebufferWidth, framebufferHeight);
+        // Pass 2：从相机视角正常渲染
+        glBindFramebuffer(GL_FRAMEBUFFER, 0); // 解绑 FBO，切回默认帧缓冲
+        glViewport(0, 0, framebufferWidth, framebufferHeight); // 恢复窗口尺寸 viewport
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        //绘制光源位置小方块
+        //绘制光源位置小方块（白色，标记点光源在哪）
         lightShader.use();
         glm::mat4 lightModel = glm::mat4(1.0f);
         lightModel = glm::translate(lightModel, lightPos);
-        lightModel = glm::scale(lightModel, glm::vec3(0.2f));
+        lightModel = glm::scale(lightModel, glm::vec3(0.12f));
         lightShader.setMat4("model", lightModel);
         lightShader.setMat4("view", view);
         lightShader.setMat4("projection", projection);
@@ -438,47 +474,41 @@ int main(){
         glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
 
-        //物体对象
+        // ---- 正式渲染：物体 + 房间（objShader 做完整光照 + 阴影比较）----
         objShader.use();
-        
-        objShader.setMat4("model",model);
         objShader.setMat4("view",view);
         objShader.setMat4("projection",projection);
-        objShader.setMat3("normalMatrix",normalMatrix);
         objShader.setVec3("cameraPos",camera.Position);
-
-        // 阴影映射相关 uniform
-        objShader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
-        objShader.setInt("shadowMap", 2);
-
-        // 设置平行光参数（方向、颜色）
-        objShader.setVec3("light.direction", glm::vec3(-0.2f, -1.0f, -0.3f)); // 固定斜上方照射
-        objShader.setVec3("light.ambient",  glm::vec3(0.2f, 0.2f, 0.2f));
-        objShader.setVec3("light.diffuse",  glm::vec3(0.8f, 0.8f, 0.8f));
+        objShader.setInt("depthMap", 2);        // 深度 Cubemap 所在纹理单元
+        objShader.setFloat("far_plane", farPlane); // 片元阶段还原真实深度
+        objShader.setVec3("light.position", lightPos);
+        objShader.setVec3("light.ambient",  glm::vec3(0.06f, 0.06f, 0.06f));
+        objShader.setVec3("light.diffuse",  glm::vec3(1.2f, 1.2f, 1.2f));
         objShader.setVec3("light.specular", glm::vec3(1.0f, 1.0f, 1.0f));
-
-        // 设置 Material 结构体
         objShader.setInt("material.diffuse", 0);
         objShader.setInt("material.specular", 1);
         objShader.setFloat("material.shininess", 64.0f);
 
+        // 绑定贴图：0=漫反射 1=高光 2=深度 Cubemap
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, diffuseMap);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, specularMap);
         glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, depthMap); // 深度贴图绑定到纹理单元 2（对应 uniform shadowMap）
+        glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap); // cubemap 深度贴图绑定到纹理单元 2
 
-        //绘制物体正方体
+        // 绘制立方体
         glBindVertexArray(VAO);
-        glDrawElements(GL_TRIANGLES,indexCount,GL_UNSIGNED_INT,0);
-        //绘制地面（同样接收阴影）
+        objShader.setMat4("model", model);
+        objShader.setMat3("normalMatrix", glm::transpose(glm::inverse(glm::mat3(model))));
+        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0);
+        // 绘制地面
         glBindVertexArray(groundVAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
 
-        glfwSwapBuffers(window);
-        glfwPollEvents();
+        glfwSwapBuffers(window); // 交换前后缓冲，把本帧画面显示到窗口
+        glfwPollEvents();        // 处理窗口事件（鼠标、键盘、关闭等）
     }
 
     glDeleteVertexArrays(1, &VAO);
@@ -488,6 +518,8 @@ int main(){
     glDeleteBuffers(1, &groundVBO);
     glDeleteTextures(1, &diffuseMap);
     glDeleteTextures(1, &specularMap);
+    glDeleteTextures(1, &depthCubemap);
+    glDeleteFramebuffers(1, &pointShadowFBO);
     }
 
     glfwDestroyWindow(window);
