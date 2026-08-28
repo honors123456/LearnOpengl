@@ -6911,55 +6911,140 @@ $$
 
 在片段着色器中，我们在采样漫反射和法线贴图之前，**先用高度图对 UV 坐标进行一次“视差偏移”**：
 
+
+
+```c++
+#version 330 core
+layout (location = 0) in vec3 aPos;       // 顶点位置
+layout (location = 1) in vec3 aNormal;    // 法线
+layout (location = 2) in vec2 aTexCoords; // 纹理坐标
+layout (location = 3) in vec3 aTangent;   // 切线
+layout (location = 4) in vec3 aBitangent; // 副切线
+
+uniform mat4 projection;  // 投影矩阵（相机 -> 裁剪）
+uniform mat4 view;        // 视图矩阵（世界 -> 相机）
+uniform mat4 model;       // 模型矩阵（局部 -> 世界）
+uniform vec3 viewPos;     // 相机位置（世界空间）
+uniform vec3 lightPos;    // 光源位置（世界空间）
+
+// 传给片段着色器的接口块：所有向量都变换到【切线空间】。
+out VS_OUT {
+    vec3 FragPos;          // 片元世界坐标
+    vec2 TexCoords;        // 纹理坐标
+    vec3 TangentLightPos;  // 光源位置（切线空间）
+    vec3 TangentViewPos;   // 相机位置（切线空间）
+    vec3 TangentFragPos;   // 片元位置（切线空间）
+} vs_out;
+
+void main()
+{
+    // 把顶点变换到世界空间，供后面 TBN 变换和光照使用。
+    vec3 fragPos = vec3(model * vec4(aPos, 1.0));
+    vs_out.FragPos = fragPos;
+    vs_out.TexCoords = aTexCoords;
+
+    // 法线、切线、副切线变换到世界空间（normalMatrix 防止非等比缩放扭曲方向）。
+    mat3 normalMatrix = transpose(inverse(mat3(model)));
+    vec3 N = normalize(normalMatrix * aNormal);
+    vec3 T = normalize(normalMatrix * aTangent);
+    vec3 B = normalize(normalMatrix * aBitangent);
+
+    // 构造世界 -> 切线的 TBN 矩阵：把光线、视线、片元位置翻译进切线空间，
+    // 以便片段着色器里能用法线贴图（存于切线空间）直接做点积。
+    mat3 TBN = transpose(mat3(T, B, N));
+
+    vs_out.TangentLightPos = TBN * lightPos;
+    vs_out.TangentViewPos  = TBN * viewPos;
+    vs_out.TangentFragPos  = TBN * fragPos;
+
+    gl_Position = projection * view * vec4(fragPos, 1.0);
+}
+```
+
+
+
 ```glsl
-# version 330 core
+#version 330 core
+
 out vec4 FragColor;
 
+// 光照参数结构体：本 demo 只用了一个点光源。
+// 注意：光源方向不用这里传，顶点着色器已把 lightPos 变换到切线空间（fs_in.TangentLightPos）。
+struct Light {
+    vec3 ambient;   // 环境光强度
+    vec3 diffuse;   // 漫反射强度
+    vec3 specular;  // 镜面高光强度
+};
+
+// 材质参数结构体：三张贴图 + 视差高度缩放。
+struct Material {
+    sampler2D diffuse;   // 漫反射贴图：物体固有颜色
+    sampler2D normalMap; // 法线贴图：颜色编码的切线空间法线
+    sampler2D depthMap;  // 高度图（黑白）：R 通道存表面高度
+    float shininess;     // 高光锐度（越大越集中）
+};
+
+// 顶点着色器传来的数据（都在切线空间）。
 in VS_OUT {
-    vec3 FragPos;
-    vec2 TexCoords;
-    vec3 TangentLightPos;
-    vec3 TangentViewPos;
-    vec3 TangentFragPos;
+    vec3 FragPos;          // 片元世界坐标
+    vec2 TexCoords;        // 纹理坐标（视差偏移会修改它）
+    vec3 TangentLightPos;  // 光源位置（切线空间）
+    vec3 TangentViewPos;   // 相机位置（切线空间）
+    vec3 TangentFragPos;   // 片元位置（切线空间）
 } fs_in;
 
-uniform sampler2D diffuseMap;
-uniform sampler2D normalMap;
-uniform sampler2D depthMap; // 👈 高度图 / 深度图 (Height Map)
+uniform Material material;
+uniform Light light;
+uniform float heightScale; // 视差强度（越大凹陷越深，用 Q/E 键调节）
 
-uniform float height_scale; // 凹陷深度控制系数 (例如 0.1)
-
-// 基础视差映射：计算偏移后的 UV 坐标
-vec2 ParallaxMapping(vec2 texCoords, vec3 viewDir) {
-    // 1. 从高度图中采样当前点的深度/高度 (白色凸起，黑色凹陷)
-    float height = texture(depthMap, texCoords).r;    
-    
-    // 2. 核心公式：根据视线方向与高度计算 UV 偏移量
-    // 注意：这里用 viewDir.xy 除以 viewDir.z，视线越平缓，偏移越大
-    vec2 p = viewDir.xy / viewDir.z * (height * height_scale);
-    
-    // 3. 用当前 UV 减去偏移量，得到新的采样 UV
-    return texCoords - p;
-}
-
-void main() {
-    // 1. 将世界空间的视线方向转换到切线空间，并归一化
+void main()
+{
+    // 0. 计算切线空间视线方向（片元指向相机）。
     vec3 viewDir = normalize(fs_in.TangentViewPos - fs_in.TangentFragPos);
-    
-    // 2. 👈 核心：调用视差映射函数，得到被偏移后的“错位 UV”！
-    vec2 aliasedTexCoords = ParallaxMapping(fs_in.TexCoords, viewDir);
 
-    // 防御性越界检查：如果偏移后的 UV 超出了 [0, 1] 范围，直接丢弃或不采样
-    if(aliasedTexCoords.x > 1.0 || aliasedTexCoords.x < 0.0 || 
-       aliasedTexCoords.y > 1.0 || aliasedTexCoords.y < 0.0)
-        discard;
+    // 1. 视差贴图核心：根据高度图偏移 UV（全部内联，不再封装函数）。
+    //    原理：视线越倾斜、高度越低（凹陷越深），UV 偏移越大，
+    //    让平面看起来像有真实的深度遮挡（砖块互相错位）。
+    // 1.1 采样当前 UV 处的高度（0 = 最深凹陷，1 = 最高凸起）。
+    float height = texture(material.depthMap, fs_in.TexCoords).r;
 
-    // 3. 带着“偏移后的 UV”去采样法线贴图和漫反射贴图！
-    vec3 normal = texture(normalMap, aliasedTexCoords).rgb;
-    normal = normalize(normal * 2.0 - 1.0);   
-    vec3 color = texture(diffuseMap, aliasedTexCoords).rgb;
+    // 1.2 视线方向在切线空间下的偏移量：viewDir.xy / viewDir.z 是视线倾斜程度。
+    //     视线越斜（viewDir.xy 大 / viewDir.z 小），或高度越低，偏移越大。
+    vec2 p = viewDir.xy / viewDir.z * (height * heightScale);
 
-    // ... 后续正常计算光照 (Ambient, Diffuse, Specular) ...
+    // 1.3 用偏移后的 UV 采样其他贴图，实现“假深度遮挡”。
+    vec2 texCoords = fs_in.TexCoords - p;
+
+    // 2. 采样法线贴图并解包成 [-1, 1] 的切线空间法线。
+    vec3 N = texture(material.normalMap, texCoords).rgb;
+    N = normalize(N * 2.0 - 1.0);
+
+    // 3. 计算切线空间光线/视线/半程向量。
+    vec3 L = normalize(fs_in.TangentLightPos - fs_in.TangentFragPos);
+    vec3 V = normalize(fs_in.TangentViewPos  - fs_in.TangentFragPos);
+    vec3 H = normalize(L + V);
+
+    // 4. 采样漫反射贴图，做 gamma 逆校正（转回线性空间）。
+    vec3 diffuseColor = pow(texture(material.diffuse, texCoords).rgb, vec3(2.2));
+
+    // 5. 漫反射（Lambert 定律）与高光（Blinn-Phong）。
+    float diff = max(dot(N, L), 0.0);
+    float spec = pow(max(dot(N, H), 0.0), material.shininess);
+
+    // 6. 点光源距离衰减。
+    float lightDistance = length(fs_in.TangentLightPos - fs_in.TangentFragPos);
+    float attenuation = 1.0 / (1.0 + 0.22 * lightDistance + 0.20 * lightDistance * lightDistance);
+
+    // 7. 合成光照：环境光 + (漫反射 + 高光) × 衰减。
+    vec3 ambient = light.ambient * diffuseColor;
+    vec3 diffuse = light.diffuse * diff * diffuseColor;
+    vec3 specular = light.specular * spec;
+    vec3 lighting = ambient + (diffuse + specular) * attenuation;
+
+    // 8. gamma 校正：线性光照结果映射回 sRGB 显示空间。
+    vec3 finalColor = pow(lighting, vec3(1.0 / 2.2));
+
+    FragColor = vec4(finalColor, 1.0);
 }
 ```
 
@@ -6994,4 +7079,888 @@ void main() {
 2. **底层武器：** 一张黑白**高度图（Height Map）**。
 3. **实现秘诀：** 在片段着色器中，利用**视线方向与高度值**动态偏移 UV 坐标，让像素在视觉上发生“物理错位”。
 
-搞懂了视差贴图（Parallax Mapping）如何用数学错觉创造出微观几何结构后，我们接下来正式进入下一个重磅高级章节： 👉 **HDR 与 Bloom (高动态范围渲染与泛光特效)**
+
+
+
+
+## 第二十七章.HDR 与 Bloom（泛光特效）
+
+在现实世界中，太阳光的亮度可以是烛光的几万倍，人眼可以极其舒适地适应从极黑到极亮的跨度。但在传统的电脑渲染中，我们的颜色值被死死锁死在 `[0.0, 1.0]` 的狭窄区间内（过曝的强光直接被粗暴截断为纯白色）。
+
+而 **HDR 渲染** 允许我们用真正的浮点数来计算超高亮度的光照；紧接着的 **Bloom（泛光特效）** 则能让太阳、车灯、爆炸等强光源产生刺眼、耀眼的光晕扩散效果！
+
+
+
+#### 1.核心思想
+
+在默认情况下，我们的片段着色器输出的颜色（RGB）上限是 **`1.0`**：
+
+- 黑暗的角落：`0.1`
+- 普通的白墙：`0.8`
+- 太阳 / 强力聚光灯：本该是 `10.0` 或 `50.0` 的极高光强。
+- **灾难发生：** 因为输出上限只有 `1.0`，显卡把所有大于 `1.0` 的光照统统**“强行截断（Clamp）”**成了 `1.0`。
+- **后果：** 画面中 100 瓦的灯泡和 10000 瓦的太阳看起来没有任何区别，全是一片惨白、毫无层次感的“塑料假白”。
+
+
+
+解决方案：
+
+- **第一步（浮点缓冲）：** 允许光照颜色突破 `1.0`（比如输出 `vec3(15.0, 15.0, 15.0)`），在创建 FBO 颜色纹理时，使用 16 位或 32 位浮点数格式（如 **`GL_RGB16F`**）来存储超高亮度，绝对不截断！
+- **第二步（色调映射 Tone Mapping）：** 因为我们的电脑显示器只能显示 `0.0 ~ 1.0` 的标准 LDR 范围，所以在最后一步，我们通过数学公式，**把超高亮度的 HDR 颜色“压缩”回 `[0.0, 1.0]` 的显示范围内，同时完美保留暗部细节和亮部层次！**
+
+
+
+#### 2.HDR浮点帧缓冲（Float FBO）
+
+要玩转 HDR，第一步是创建一个支持浮点数的 FBO：
+
+```c++
+unsigned int hdrFBO;
+glGenFramebuffers(1, &hdrFBO);
+glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
+
+// 1. 创建浮点数颜色纹理附件-保存场景和物体 (关键：内部格式使用 GL_RGB16F 代替普通的 GL_RGB8)
+unsigned int colorBuffer;
+glGenTextures(1, &colorBuffer);
+glBindTexture(GL_TEXTURE_2D, colorBuffer);
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorBuffer, 0);
+
+//2.创建浮点数颜色纹理附件-保存亮度
+unsigned int brightnessBuffer;
+glGenTextures(1, &brightnessBuffer);
+glBindTexture(GL_TEXTURE_2D, brightnessBuffer);
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, brightnessBuffer, 0);
+
+// 3. 创建标准的深度缓冲 RBO
+unsigned int rboDepth;
+glGenRenderbuffers(1, &rboDepth);
+glBindRenderbuffer(GL_RENDERBUFFER, rboDepth);
+glStorageRenderbuffer(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, SCR_WIDTH, SCR_HEIGHT);
+glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rboDepth);
+
+//同时启用两个颜色纹理附件
+//opengl以及glsl规范规定
+//glVertexAttribPointer → 配置顶点属性 location 
+//glDrawBuffers         → 配置片段颜色输出 location
+GLenum targets[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+glDrawBuffers(2, targets);
+
+if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    std::cout << "HDR Framebuffer not complete!" << std::endl;
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
+```
+
+
+
+#### 3.色调映射（Tone Mapping）
+
+在最后一步全屏渲染（Screen Quad）的片段着色器中，我们对超高亮度的 HDR 颜色进行压缩：
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+in vec2 TexCoords;
+
+uniform sampler2D hdrBuffer;
+uniform float exposure; // 曝光度控制
+
+void main() {
+    vec3 hdrColor = texture(hdrBuffer, TexCoords).rgb;
+    
+    // 1. 色调映射公式 (Tone Mapping) - 这里使用最经典的 Reinhard 算子，或者高级的 ACES 曲线
+    // 它的数学本质：把任何极大的数 x，映射成 x / (x + 1)，让它永远无限趋近于 1.0 却永不溢出！
+    vec3 mapped = hdrColor / (hdrColor + vec3(1.0));
+    
+    // 2. 结合曝光度调整 (Exposure)
+    // mapped = vec3(1.0) - exp(-hdrColor * exposure); // 曝光公式
+    
+    // 3. 经典的 Gamma 校正 (2.2)
+    mapped = pow(mapped, vec3(1.0 / 2.2));
+    
+    FragColor = vec4(mapped, 1.0);
+}
+```
+
+
+
+#### 4.Bloom（泛光特效）
+
+有了 HDR 之后，太阳的亮度变成了 `20.0`。但如果直接显示在屏幕上，它依然只是一个很亮的像素点。 **Bloom 的使命，就是让这个强光点“晕染扩散开来”，变成刺眼的光晕。**
+
+- **亮部提取（Bright Pass）：** 扫描整张 HDR 画面，把亮度超过阈值（如亮度 >1.0>1.0）的强光挑出来，其余暗部抹成纯黑。
+- **降采样（Downsampling）：** 把亮部图缩小（比如缩到原图的 1441），极大降低模糊时的显卡采样开销。
+- **可分离高斯模糊（Separable Gaussian Blur）：** 利用高斯函数的数学特性，将 N×N的复杂计算拆解为**“先做一次水平模糊，再做一次垂直模糊”**。
+- **Ping-Pong FBO 迭代：** 借助两个交替的 FBO 来回倒腾 3~5 次，让光晕极其平滑、均匀地向四周扩散开。
+
+
+
+##### Ping-pong FBO
+
+```c++
+//创建两个FBO,两个纹理
+GLuint ping[2], ptex[2];
+glGenFramebuffers(2, ping);
+glGenTextures(2, ptex);
+
+// 创建两个颜色附件：完整场景和亮部提取结果。
+for (int i = 0; i < 2; ++i) {
+    glBindFramebuffer(GL_FRAMEBUFFER, ping[i]);
+    glBindTexture(GL_TEXTURE_2D, ptex[i]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, W, H, 0, GL_RGBA, GL_FLOAT,nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,ptex[i], 0);
+}
+ glBindFramebuffer(GL_FRAMEBUFFER, 0);
+```
+
+
+
+##### 亮度提取(objectShader.frag)
+
+```glsl
+#version 330 core
+layout(location=0) out vec4 FragColor; 
+layout(location=1) out vec4 BrightColor;
+
+in vec3 FragPos; 
+in vec3 Normal; 
+in vec2 TexCoords; 
+uniform sampler2D diffuseMap;
+uniform vec3 lightPos; 
+uniform vec3 viewPos;
+
+void main(){
+    
+    //法线向量和入射向量
+    vec3 N=normalize(Normal);
+    vec3 L=normalize(lightPos-FragPos);
+
+    //距离衰减因子
+    float dist=length(lightPos-FragPos);
+    float att=1.0 / (1.0 + 0.22*dist + 0.20*dist*dist);
+
+    //漫反射贴图颜色
+    vec3 diffuseColor=pow(texture(diffuseMap,TexCoords).rgb,vec3(2.2));
+
+    //漫反射因子
+    float d=max(dot(N,L),0.0);
+
+    //最终颜色
+    vec3 color=0.08*diffuseColor+diffuseColor*d*att;
+
+    FragColor=vec4(color,1.0);
+
+    //亮度计算公式
+    float brightness=dot(color,vec3(0.2126,0.7152,0.0722));
+
+    //亮度提取
+    BrightColor=brightness>1.0?vec4(color,1.0):vec4(0.0);
+}
+```
+
+
+
+##### 高斯模糊 (`blurShader.frag`)
+
+```glsl
+#version 330 core
+
+out vec4 FragColor;
+in vec2 TexCoords;
+
+uniform sampler2D image;
+uniform bool horizontal;
+
+// 一维高斯卷积核。中心权重最大，距离中心越远权重越小。
+const float weight[5] = float[](
+    0.227027,
+    0.1945946,
+    0.1216216,
+    0.054054,
+    0.016216
+);
+
+void main()
+{
+    // 将一个像素转换成 UV 距离，例如 800 像素宽时 x 为 1.0 / 800.0。
+    vec2 texelSize = 1.0 / textureSize(image, 0);
+
+    // 先采样卷积核中心，也就是当前像素。
+    vec3 result = texture(image, TexCoords).rgb * weight[0];
+
+    // 采样中心两侧各四个像素，共组成 9 个采样点。
+    for (int i = 1; i < 5; ++i)
+    {
+        // 水平模糊只改变 UV.x，垂直模糊只改变 UV.y。
+        vec2 offset = horizontal
+            ? vec2(texelSize.x * float(i), 0.0)
+            : vec2(0.0, texelSize.y * float(i));
+
+        // 正负方向对称采样，并乘以相同的高斯权重。
+        result += texture(image, TexCoords + offset).rgb * weight[i];
+        result += texture(image, TexCoords - offset).rgb * weight[i];
+    }
+
+    // 输出当前方向的模糊结果，供下一轮或最终 Bloom 合成使用。
+    FragColor = vec4(result, 1.0);
+}
+```
+
+
+
+现在，我们手头上有两张图：
+
+1. **原版未模糊的 HDR 场景图**（里面有正常的暗部、细节和未扩散的强光点）。
+2. **经过高斯模糊后的 Bloom 光晕图**（一张周围带着耀眼光晕的柔和发光图）。
+
+我们在最后的屏幕全屏渲染（Screen Quad）中，把它们**相加混合（Additive Blending）**，然后送入色调映射.
+
+finalShader.frag 
+
+```glsl
+#version 330 core
+out vec4 FragColor; 
+in vec2 TexCoords; 
+uniform sampler2D hdrScene; 
+uniform sampler2D bloomBlur; 
+uniform float exposure;
+
+//ACES电影级别色调调色
+vec3 ACESFilm(vec3 x)
+{
+    float a=2.51,b=0.03,c=2.43,d=0.59,e=0.14;
+    return clamp((x*(a*x+b))/(x*(c*x+d)+e),0,1);
+}
+
+void main()
+{
+    vec3 hdr=texture(hdrScene,TexCoords).rgb+texture(bloomBlur,TexCoords).rgb;
+    vec3 color=ACESFilm(hdr*exposure);
+    
+    //gamma校正
+    FragColor=vec4(pow(color,vec3(1.0/2.2)),1);
+}
+
+```
+
+
+
+渲染循环：
+
+```c++
+while (!glfwWindowShouldClose(window)) {
+    float now = (float)glfwGetTime();
+    dt = now - last;
+    last = now;
+    input(window);
+
+    //观察矩阵和投影矩阵
+    glm::mat4 view = camera.GetViewMatrix(),
+              proj = glm::perspective(glm::radians(camera.Zoom), float(W) / H,
+                                      0.1f, 100.0f);
+
+    // 第一阶段：把 3D 场景渲染到 HDR 帧缓冲。
+    // 阶段一：绑定 HDR FBO，开始渲染场景。
+    glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    objShder.use();
+    objShder.setMat4("view", view);
+    objShder.setMat4("projection", proj);
+    glm::mat4 cubeModel = glm::rotate(glm::mat4(1.0f), glm::radians(25.0f),
+                                      glm::vec3(1.0f, 0.0f, 0.0f));
+    cubeModel = glm::rotate(cubeModel, glm::radians(-30.0f),
+                            glm::vec3(0.0f, 1.0f, 0.0f));
+    cubeModel = glm::scale(cubeModel, glm::vec3(0.6f));
+    objShder.setMat4("model", cubeModel);
+    objShder.setVec3("viewPos", camera.Position);
+    objShder.setVec3("lightPos", lightPos);
+    objShder.setInt("diffuseMap", 0);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+    // 光源也写入 HDR FBO，因此它的高亮会参与 Bloom。
+    lightShader.use();
+    lightShader.setMat4("model", glm::translate(glm::mat4(1.0f), lightPos));
+    lightShader.setMat4("view", view);
+    lightShader.setMat4("projection", proj);
+    glPointSize(24.0f);
+    glBindVertexArray(lightVAO);
+    glDrawArrays(GL_POINTS, 0, 1);
+
+    // 第二阶段：从亮部纹理开始，交替执行水平和垂直模糊。
+    // 阶段二：交替执行水平模糊和垂直模糊。
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    bool horizontal = true, first = true;
+    blurShader.use();
+    blurShader.setInt("image", 0);
+    for (int i = 0; i < 10; ++i) {
+      glBindFramebuffer(GL_FRAMEBUFFER, ping[horizontal]);
+      blurShader.setInt("horizontal", horizontal);
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, first ? colors[1] : ptex[!horizontal]);
+      glBindVertexArray(qvao);
+      glDrawArrays(GL_TRIANGLES, 0, 6);
+      horizontal = !horizontal;
+      first = false;
+    }
+
+    // 第三阶段：回到默认帧缓冲，合成 HDR 场景和 Bloom 光晕。
+    // 阶段三：绑定默认帧缓冲，把结果显示到窗口。
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    compositeSHader.use();
+    compositeSHader.setInt("hdrScene", 0);
+    compositeSHader.setInt("bloomBlur", 1);
+    // 曝光值控制 HDR 颜色进入色调映射前的整体亮度。
+    compositeSHader.setFloat("exposure", 1.0f);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, colors[0]);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, ptex[!horizontal]);
+    glBindVertexArray(qvao);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glfwSwapBuffers(window);
+    glfwPollEvents();
+}
+```
+
+
+
+
+
+## 第二十八章.延迟渲染（**Deferred Shading**）
+
+​		在前面的所有章节中，我们使用的都是 **前向渲染 (Forward Rendering)**：画一个物体，就把它的材质、法线、纹理以及**场景里的所有光源（比如 100 个灯光）**全部塞进片段着色器里算一遍。
+
+- **灾难：** 如果场景里有 10001000 个动态光源，前向渲染的复杂度直接飙升到 O(Objects×Lights)*O*(Objects×Lights)，显卡瞬间卡死成 PPT。
+
+而 **延迟渲染 (Deferred Shading)** 的出现，彻底颠覆了传统的渲染逻辑：它把光照计算**“延迟”**到最后一步，通过 **G-Buffer（几何缓冲）** 让屏幕上的每个像素只计算一次光照，无论场景里有多少个光源，性能依然稳如泰山！
+
+下面我们严格按照**硬核极客技术手册**的标准，把延迟渲染的**核心痛点、G-Buffer 结构、双 Pass 架构以及它为什么能秒杀成百上千个光源**彻底扒光！
+
+
+
+#### 1.核心思想
+
+在传统的前向渲染中：
+
+- 渲染一个箱子时，如果场景里有 **100100 个点光源**：
+- 每一个片元（Pixel）在执行片段着色器时，都要把这 100100 个光源的距离、衰减、漫反射、高光全部循环计算一遍。
+- **最致命的是：** 如果场景里有大量互相遮挡的物体（比如箱子 A 挡住了箱子 B），那些被遮挡在后面的像素，明明最终不会显示在屏幕上，但显卡依然傻乎乎地为它们计算了 100 个光源的光照！这叫 **“过度绘制 (Overdraw) 的几何灾难”**。
+
+
+
+延迟渲染的哲学是：
+
+> **“在第一步，我们绝对不计算任何光照！我们只把物体的【基础材质、世界坐标、法线、颜色】像拍快照一样，整整齐齐地记录在几张大显存纹理里。到了最后一步，我们只针对屏幕上最终能看到的每一个像素，精确地计算一次光照！”**
+
+复杂度直接从 O(Objects×Lights) 降级为 O(Pixels×Lights)，彻底摆脱了几何体遮挡带来的算力浪费。
+
+
+
+##### 延迟渲染的技术载体叫 **G-Buffer（Geometry Buffer，几何缓冲）**。 我们在 C++ 端创建一个拥有**多个颜色附件（Multiple Render Targets, MRT）**的超级 FBO，在 Pass 1 把整个场景的几何信息“拍快照”存进 4 张纹理里：
+
+```
+				┌────────────────────────────────┐
+                 │    G-Buffer (多渲染目标 FBO)    │
+                 └───────────────┬────────────────┘
+     ┌──────────────────┬────────┴─────────┬──────────────────┐
+     ▼                  ▼                  ▼                  ▼
+┌─────────┐        ┌─────────┐        ┌─────────┐        ┌─────────┐
+│gPosition│        │ gNormal │        │ gAlbedo │        │gSpecular│
+│(世界坐标)│        │(世界法线)│        │(固有颜色)│        │(高光强度)│
+└─────────┘        └─────────┘        └─────────┘        └─────────┘
+```
+
+| G-Buffer 纹理槽位              | 数据格式     | 存储的内容                                    |
+| :----------------------------- | :----------- | :-------------------------------------------- |
+| **`gPosition` (Attachment 0)** | `GL_RGBA16F` | 当前像素在**世界空间下的 3D 坐标 (X,Y,Z)**    |
+| **`gNormal` (Attachment 1)**   | `GL_RGBA16F` | 当前像素在**世界空间下的法线向量 (Nx,Ny,Nz)** |
+| **`gAlbedo` (Attachment 2)**   | `GL_RGBA8`   | 当前像素的**固有漫反射颜色 (R,G,B)**          |
+| **`gSpecular` (Attachment 3)** | `GL_RGBA8`   | 当前像素的**高光反射强度 (Spec)**             |
+
+
+
+#### 2.实现代码
+
+#####  C++ 端：配置 G-Buffer 帧缓冲 (MRT)
+
+```c++
+unsigned int gBuffer;
+glGenFramebuffers(1, &gBuffer);
+glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
+
+unsigned int gPosition, gNormal, gAlbedo, gSpecular;
+
+// 1. 位置纹理 (使用 16 位浮点数 GL_RGBA16F 保证 3D 坐标精度)
+glGenTextures(1, &gPosition);
+glBindTexture(GL_TEXTURE_2D, gPosition);
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gPosition, 0);
+
+// 2. 法线纹理 (同样使用 GL_RGBA16F 保存精度)
+glGenTextures(1, &gNormal);
+glBindTexture(GL_TEXTURE_2D, gNormal);
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gNormal, 0);
+
+// 3. 颜色纹理 (使用标准 GL_RGBA8 即可)
+glGenTextures(1, &gAlbedo);
+glBindTexture(GL_TEXTURE_2D, gAlbedo);
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gAlbedo, 0);
+
+// 4. 高光强度纹理
+glGenTextures(1, &gSpecular);
+glBindTexture(GL_TEXTURE_2D, gSpecular);
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, gSpecular, 0);
+
+// 👈 极其关键：显式通知 OpenGL，这个 FBO 有 4 个颜色输出通道！
+unsigned int attachments[4] = { 
+    GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 
+};
+glDrawBuffers(4, attachments);
+
+// 5. 绑定深度 RBO 供几何 Pass 进行深度测试 (Z-Testing)
+unsigned int rboDepth;
+glGenRenderbuffers(1, &rboDepth);
+glBindRenderbuffer(GL_RENDERBUFFER, rboDepth);
+glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, SCR_WIDTH, SCR_HEIGHT);
+glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rboDepth);
+
+if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    std::cout << "G-Buffer Framebuffer not complete!" << std::endl;
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
+```
+
+
+
+##### 着色器端：
+
+##### Pass 1: 几何着色器
+
+在这步，**绝对不写任何光照公式**！只把 3D 物体的顶点和材质填进 4 张纹理里：
+
+gBuffer.vert
+
+```glsl
+# version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec2 aTexCoords;
+
+out VS_OUT {
+    vec3 FragPos;
+    vec3 Normal;
+    vec2 TexCoords;
+} vs_out;
+
+uniform mat4 projection;
+uniform mat4 view;
+uniform mat4 model;
+
+void main() {
+    vec4 worldPos = model * vec4(aPos, 1.0);
+    vs_out.FragPos = vec3(worldPos);
+    
+    // 计算世界空间法线
+    mat3 normalMatrix = transpose(inverse(mat3(model)));
+    vs_out.Normal = normalize(normalMatrix * aNormal);
+    vs_out.TexCoords = aTexCoords;
+
+    gl_Position = projection * view * worldPos;
+}
+```
+
+
+
+gBuffer.frag    **- 多重渲染目标 MRT**
+
+```glsl
+# version 330 core
+// 👈 核心：使用片段输出位置 layout(location = N)，同时吐出给 4 张纹理！
+layout (location = 0) out vec3 gPosition;
+layout (location = 1) out vec3 gNormal;
+layout (location = 2) out vec3 gAlbedo;
+layout (location = 3) out vec3 gSpecular;
+
+in VS_OUT {
+    vec3 FragPos;
+    vec3 Normal;
+    vec2 TexCoords;
+} fs_in;
+
+uniform sampler2D texture_diffuse1;
+uniform sampler2D texture_specular1;
+
+void main() {
+    // 1. 输出世界空间坐标到 Attachment 0
+    gPosition = fs_in.FragPos;
+    // 2. 输出世界空间法线到 Attachment 1
+    gNormal = normalize(fs_in.Normal);
+    // 3. 输出漫反射颜色到 Attachment 2
+    gAlbedo = texture(texture_diffuse1, fs_in.TexCoords).rgb;
+    // 4. 输出高光强度到 Attachment 3
+    gSpecular = texture(texture_specular1, fs_in.TexCoords).rrr;
+}
+```
+
+
+
+##### Pass 2 光照着色器 （全屏后处理聚合光照）
+
+我们画一个覆盖屏幕的 2D 矩形（Screen Quad）。 片段着色器**不再读取任何 3D 几何模型，而是直接去读刚才画好的 4 张 G-Buffer 纹理**，一口气算完所有光源：
+
+deffered_lighting.frag
+
+```glsl
+# version 330 core
+out vec4 FragColor;
+in vec2 TexCoords;
+
+// 👈 读取 Pass 1 拍下的 4 张快照纹理
+uniform sampler2D gPosition;
+uniform sampler2D gNormal;
+uniform sampler2D gAlbedo;
+uniform sampler2D gSpecular;
+
+struct Light {
+    vec3 Position;
+    vec3 Color;
+    float Linear;
+    float Quadratic;
+};
+const int NR_LIGHTS = 100; // 支持成百上千个动态光源！
+uniform Light lights[NR_LIGHTS];
+uniform vec3 viewPos;
+
+void main() {
+    // 1. 从 G-Buffer 中解包出当前像素的几何与材质属性
+    vec3 FragPos   = texture(gPosition, TexCoords).rgb;
+    vec3 Normal    = texture(gNormal, TexCoords).rgb;
+    vec3 Albedo    = texture(gAlbedo, TexCoords).rgb;
+    float Specular = texture(gSpecular, TexCoords).r;
+
+    // 2. 基础环境光
+    vec3 lighting = Albedo * 0.1;
+    vec3 viewDir  = normalize(viewPos - FragPos);
+
+    // 3. 遍历场景里的所有光源，累加光照 (Blinn-Phong)
+    for(int i = 0; i < NR_LIGHTS; ++i) {
+        // 光源衰减计算
+        float distance = length(lights[i].Position - FragPos);
+        float attenuation = 1.0 / (1.0 + lights[i].Linear * distance + lights[i].Quadratic * (distance * distance));
+        
+        // 漫反射 (Diffuse)
+        vec3 lightDir = normalize(lights[i].Position - FragPos);
+        float diff = max(dot(Normal, lightDir), 0.0);
+        vec3 diffuse = lights[i].Color * diff * Albedo * attenuation;
+        
+        // 镜面高光 (Specular)
+        vec3 halfwayDir = normalize(lightDir + viewDir);
+        float spec = pow(max(dot(Normal, halfwayDir), 0.0), 16.0);
+        vec3 specular = lights[i].Color * spec * Specular * attenuation;
+        
+        lighting += diffuse + specular;
+    }
+
+    FragColor = vec4(lighting, 1.0);
+}
+```
+
+
+
+#### 3.工业级深度：延迟渲染的局限与三大缺点
+
+延迟渲染虽然能轻松支持成百上千个光源，但它并非完美无缺，工业界为了解决它的缺陷付出了巨大的努力：
+
+1. 无法原生支持半透明物体（Blending 灾难）：
+   - **原因：** G-Buffer 的每个像素点只能保存**一个物体的几何快照**。如果有半透明玻璃遮挡在墙面前，G-Buffer 无法存下两层物体的位置和法线。
+   - **工业级解决方案：** 先用延迟渲染画完所有不透明物体，**最后再用传统的前向渲染（Forward Rendering）把半透明物体叠加画在最上面**（混合架构）。
+2. 巨大的显存带宽压力（Bandwidth Heavy）：
+   - 在 1080P 下，同时读写 4 张 16 位浮点纹理，对显存带宽的吞吐量要求极高。
+3. 不能直接使用 MSAA 硬件抗锯齿：
+   - **原因：** 多重采样纹理在 G-Buffer 的多个 Attachment 间难以直接解包。
+   - **工业级解决方案：** 配合后处理抗锯齿算法（如 **FXAA** 或 **TAA 时间序列抗锯齿**）。
+
+
+
+#### 4.全屏 Quad（Screen Quad）
+
+**从 HDR、Bloom、高斯模糊一直到刚才的延迟渲染光照 Pass，全场都在疯狂使用一个叫“全屏 Quad（Screen Quad / VAO）”的东西。**为什么每个高级特效的最后一步，都必须要搞一个覆盖全屏的“正方形纸片（Quad）”拍在屏幕上？
+
+
+
+在计算机显卡眼里，它只认一种东西：**几何图元（顶点、三角形、线段）。**
+
+- 当你给显卡发送一组 3D 顶点时，光栅化器会把它们变成一个个三角形，然后执行片段着色器。
+- 但如果你不做任何几何体绑定，直接告诉显卡：“喂，请帮我把这张渲染好的 HDR 纹理拿来做高斯模糊 / 做色调映射 / 做延迟光照聚合”，显卡会一头雾水：
+  - *“大哥，你想让我把这个特效画在 3D 世界的哪个位置？你想让我触发屏幕上的哪几个像素？”*
+  - 显卡没有“自动对全屏每个像素执行一次片段着色器”的默认指令。
+
+
+
+为了强行让显卡对屏幕上的每一个像素执行一次我们写好的后处理着色器（比如高斯模糊、色调映射、延迟光照），程序员们发明了一个极其聪明、甚至带点“物理外挂”性质的绝招——**全屏 Quad（全屏正方形）**。
+
+我们在 C++ 端硬编码一个**刚好铺满整个屏幕裁剪空间（NDC 坐标 `[-1, 1]`）的 2D 正方形（由 2 个三角形、6 个顶点组成）**：
+
+当我们在 C++ 里把这个全屏 Quad 发送给显卡时，发生了以下物理级奇迹：
+
+1. **顶点着色器（VS）极其简单：** 它直接把这 4 个角（`(-1,-1)`, `(1,-1)`, `(1,1)`, `(-1,1)`）原封不动地输出给屏幕，并且把 UV 坐标完美对应设为 `(0,0)` 到 `(1,1)`。
+2. **光栅化器（Rasterizer）被强制开工：** 因为这个正方形刚好覆盖了整个屏幕的每一个像素（从 `0,0` 到 `1920,1080`），光栅化器开始疯狂工作，把这个正方形切成无数个微小的片段（Fragments）。
+3. **片段着色器（FS）大显身手：** **全屏里每一个像素，都会触发一次片段着色器！** 而在片段着色器内部，我们就可以拿着对应的 UV 坐标，去尽情地采样上一阶段生成的 FBO 纹理（如 `hdrBuffer`、`gPosition`、`gNormal`），在当前像素上做各种数学魔法（比如色调映射、高斯模糊、多光源光照累加）！
+
+
+
+回过头来看我们学过的高级效果，**全屏 Quad（Screen Quad）** 几乎无处不在：
+
+1. **在 HDR 中：** 我们在 FBO 里算好了高光浮点场景，然后**把全屏 Quad 贴在屏幕上**，在 FS 里用 ACES 公式把浮点数压缩成 LDR。
+2. **在高斯模糊 / Bloom 中：** 我们把亮部图贴在全屏 Quad 上，在 FS 里做水平/垂直偏移采样。
+3. **在延迟渲染的 Lighting Pass 中：** 最绝的一幕来了——**我们在世界空间里甚至不需要画任何 3D 模型！** 我们直接在屏幕正中央画一个巨大的全屏 Quad，在 FS 里同时读取 G-Buffer 的 4 张快照（位置、法线、颜色），把场景里 1000 个光源的循环全部写在这个全屏着色器里，一气呵成把整张画面算出来！
+
+无论是 HDR 的色调映射、Bloom 的高斯模糊光晕，还是延迟渲染的百个光源聚合，它们的本质全都是： **“用一个永远贴在相机眼前的 2D 正方形纸片（Screen Quad）作为画布，把上一阶段渲染出来的离屏 FBO 纹理作为颜料，在片段着色器里对全屏像素进行重塑和再加工！”**
+
+
+
+
+
+## 第二十九章.SSAO(屏幕空间环境光遮蔽)
+
+在前面的光照模型（无论是前向渲染还是延迟渲染）中，我们都有一个巨大的痛点：**阴影虽然有了，但物体表面的“拐角处、缝隙处、两个物体紧密相交的阴暗死角”（比如墙角、桌子腿和地面的接缝处）依然显得光照过于均匀、不够真实。**
+
+在现实中，这些狭窄的缝隙很难让光线射进去（环境光被严重遮挡），所以它们天然应该呈现出一团柔和、细腻的暗影。这就是**环境光遮蔽（Ambient Occlusion, AO）**。 而 **SSAO** 的天才之处在于：**它不需要复杂的射线追踪，直接在屏幕空间（Screen Space）里，利用深度缓冲和半球随机采样，实时模拟出这种极其逼真的拐角阴影！**
+
+
+
+#### 1.核心思想
+
+- **传统环境光的局限：** 在冯氏光照或 PBR 中，环境光（Ambient）通常是一个全局统一的常数（例如 `vec3(0.1) * color`）。这意味着，不管是开阔的墙面，还是极其狭窄的墙角缝隙，它们受到的环境光照射强度一模一样。
+- **视觉上的假：** 现实生活中，光线在物体缝隙里会来回反弹、衰减，导致**所有凹陷、夹角、接触面都会产生一团天然的柔和阴影**。没有这层阴影，物体就会脱离环境，显得像浮在空中一样生硬。
+- **传统离线 AO 的代价：** 美工在建模时把 AO 烘焙到纹理（Ambient Occlusion Map）里。但如果场景是动态的、或者物体在移动，烘焙纹理就彻底失效了。
+
+
+
+**SSAO（Screen-Space Ambient Occlusion）** 是由大名鼎鼎的 Crytek 公司在开发《孤岛危机》时发明的神级实时算法。它的核心思想是：
+
+> **“我不去管 3D 复杂的全局几何体。我只站在当前像素的视角，向它周围的半球空间发射好几条随机射线，看看周围有没有被其他几何物体挡住（即采样到的深度是不是比我的距离更近）。如果周围全被挡住了，说明这里是个深深的死角，环境光就应该减弱（变暗）！”**
+
+因为这一切计算只发生在当前屏幕的像素范围内（利用延迟渲染的 G-Position 和 G-Normal 纹理），所以它叫**屏幕空间（Screen-Space）** AO。
+
+
+
+#### 2.SSAO 实现代码
+
+要在屏幕上实时算出生动的 SSAO 暗影，管线分为四个步骤：
+
+
+
+##### 1.**C++ 端：生成半球采样核心（Kernel）与随机噪声纹理（Noise Texture）。**
+
+在 CPU 端，我们在以原点 `(0,0,0)` 为中心的**半球（Hemisphere）**内部，随机生成64 个采样点向量（Sample Kernel）。这些向量主要集中在法线正方向，用来模拟从表面向四周发射的探测视线。
+
+
+
+##### 半球采样向量（Sample Kernel）
+
+```c++
+# include <vector>
+# include <random>
+# include <glm/glm.hpp>
+
+std::vector<glm::vec3> ssaoKernel;
+std::uniform_real_distribution<GLfloat> randomFloats(0.05.0f, 1.0f); // 随机小数生成器
+std::default_random_engine generator;
+
+for (unsigned int i = 0; i < 64; ++i)
+{
+    // 在半球内随机生成向量 (Z 轴朝上，确保采样点都在表面外侧)
+    glm::vec3 sample(
+        randomFloats(generator) * 2.0f - 1.0f,
+        randomFloats(generator) * 2.0f - 1.0f,
+        randomFloats(generator) // 保证 Z 轴分量为正，朝向半球上方
+    );
+    sample = glm::normalize(sample);
+    sample *= randomFloats(generator); // 赋予随机长度
+    
+    // 权重的非线性缩放：让采样点更多地聚集在原点附近（越近越精确）
+    float scale = (float)i / 64.0f;
+    scale = glm::mix(0.1f, 1.0f, scale * scale);
+    sample *= scale;
+    
+    ssaoKernel.push_back(sample);
+}
+```
+
+
+
+##### 生成 4×4 随机旋转噪声纹理
+
+因为 64 个采样点太少了，直接渲染会有巨大的马赛克噪点。我们用一张极小的 4×4旋转向量纹理，在每个像素处把半球随机旋转：
+
+```c++
+std::vector<glm::vec3> ssaoNoise;
+for (unsigned int i = 0; i < 16; i++)
+{
+    // 在切线空间的 XY 平面上生成随机旋转向量 (Z = 0)
+    glm::vec3 noise(randomFloats(generator) * 2.0f - 1.0f, randomFloats(generator) * 2.0f - 1.0f, 0.0f);
+    ssaoNoise.push_back(noise);
+}
+
+unsigned int noiseTexture;
+glGenTextures(1, &noiseTexture);
+glBindTexture(GL_TEXTURE_2D, noiseTexture);
+// 注意：使用 GL_RGB16F，且环绕模式设为 GL_REPEAT 以便在屏幕上平铺
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 4, 4, 0, GL_RGB, GL_FLOAT, &ssaoNoise[0]);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+```
+
+
+
+##### 2.SSAO 计算着色器（核心遮挡判定 `ssao.fs`）
+
+这是全场数学计算最密集的地方。我们利用延迟渲染导出的 `gPosition` 和 `gNormal`，逐像素进行半球射线检测：
+
+```glsl
+# version 330 core
+out float FragColor; // 输出单通道的 AO 遮挡因子 (0.0 = 全黑死角, 1.0 = 无遮挡)
+
+in vec2 TexCoords;
+
+uniform sampler2D gPosition; // 延迟渲染的世界坐标快照
+uniform sampler2D gNormal;   // 延迟渲染的世界法线快照
+uniform sampler2D texNoise;  // 4x4 随机旋转噪声纹理
+
+uniform vec3 samples[64];    // CPU 传过来的 64 个半球采样点
+uniform mat4 projection;     // 玩家摄像机投影矩阵
+
+// 屏幕分辨率与 4x4 噪声纹理大小的比例 (用于在全屏上平铺噪声)
+const vec2 noiseScale = vec2(800.0/4.0, 600.0/4.0); // 假设屏幕是 800x600
+
+void main() {
+    // 1. 从 G-Buffer 中读取当前像素的世界坐标与法线
+    vec3 fragPos = texture(gPosition, TexCoords).xyz;
+    vec3 normal  = normalize(texture(gNormal, TexCoords).xyz);
+    
+    // 如果法线为零（说明是天空盒背景），直接满分无遮挡返回 1.0
+    if(length(normal) == 0.0) {
+        FragColor = 1.0;
+        return;
+    }
+
+    // 2. 采样噪声纹理，得到当前像素的随机旋转向量
+    vec3 randomVec = texture(texNoise, TexCoords * noiseScale).xyz;
+    
+    // 3. 利用 Gram-Schmidt 正交化，构建以当前法线为基准的 TBN 旋转矩阵
+    vec3 tangent   = normalize(randomVec - normal * dot(randomVec, normal));
+    vec3 bitangent = cross(normal, tangent);
+    mat3 TBN       = mat3(tangent, bitangent, normal);
+    
+    // 4. 遍历 64 个半球采样点，检测遮挡
+    float occlusion = 0.0;
+    float radius = 0.5;   // 采样半径 (控制阴影扩散的物理范围)
+    float bias   = 0.025; // 深度偏置 (防止自阴影粉刺)
+
+    for(int i = 0; i < 64; ++i) {
+        // A. 将采样点从切线空间转换到世界空间，并放置在当前像素 fragPos 附近
+        vec3 samplePos = TBN * samples[i]; 
+        samplePos = fragPos + samplePos * radius;
+        
+        // B. 把这个 3D 采样点投影回屏幕空间，去采 gPosition 纹理，获取其实际几何深度！
+        vec4 offset = vec4(samplePos, 1.0);
+        offset = projection * offset; // 投射到裁剪空间
+        offset.xyz /= offset.w;       // 透视除法
+        offset.xyz = offset.xyz * 0.5 + 0.5; // 映射到 [0, 1] 的屏幕 UV 空间
+        
+        // C. 获取该采样点正下方场景中实际几何体的深度值 (Z 坐标)
+        float sampleDepth = texture(gPosition, offset.xy).z; 
+        
+        // D. 核心遮挡判定：
+        // 如果场景里的实际深度 比 我们的半球采样点还要靠里（说明有物体挡在前面），
+        // 并且距离差在合理范围内（避免远处毫不相干的物体产生错误遮挡）：
+        float rangeCheck = smoothstep(0.0, 1.0, radius / abs(fragPos.z - sampleDepth));
+        if (sampleDepth >= samplePos.z + bias) {
+            occlusion += 1.0 * rangeCheck; // 产生遮挡！加重阴影
+        }
+    }
+    
+    // 5. 算出最终的遮挡系数并反转 (0.0 = 全遮挡变暗, 1.0 = 无遮挡)
+    occlusion = 1.0 - (occlusion / 64.0);
+    FragColor = occlusion;
+}
+```
+
+
+
+##### 3.SSAO 模糊着色器（消除颗粒感 `ssao_blur.fs`）
+
+由于 64 个采样点在屏幕上会留下非常明显的噪点，我们必须用一个简单的 2×22×2 模糊滤镜对 SSAO 纹理进行平滑：
+
+```glsl
+# version 330 core
+out float FragColor;
+in vec2 TexCoords;
+
+uniform sampler2D ssaoInput; // 刚算出来的粗糙 SSAO 纹理
+
+void main() {
+    vec2 texelSize = 1.0 / vec2(textureSize(ssaoInput, 0));
+    float result = 0.0;
+    
+    // 采集周围 2x2 邻域求平均值
+    for (int x = -2; x < 2; ++x) {
+        for (int y = -2; y < 2; ++y) {
+            vec2 offset = vec2(float(x), float(y)) * texelSize;
+            result += texture(ssaoInput, TexCoords + offset).r;
+        }
+    }
+    FragColor = result / (4.0 * 4.0);
+}
+```
+
+
+
+##### 4.光照聚合阶段（将 AO 乘入环境光）
+
+在最后的光照 Pass（或者延迟渲染的 Lighting Pass）中，我们将这张平滑后的 SSAO 遮挡图直接**乘以环境光（Ambient）**：
+
+```glsl
+vec3 Albedo = texture(gAlbedo, TexCoords).rgb;
+float AmbientOcclusion = texture(ssaoBlur, TexCoords).r; // 👈 采样平滑后的 AO 图
+
+// 核心融合：环境光被 AO 因子严重衰减，墙角和缝隙瞬间陷入柔和的暗影！
+vec3 ambient = vec3(0.3) * Albedo * AmbientOcclusion; 
+```
+
+
+
+##### SSAO 全套工业级总结
+
+1. **CPU 准备：** 生成 64 个半球采样点和 4×44×4 随机旋转噪声。
+2. **SSAO 计算 Pass：** 逐像素利用 G-Buffer 的位置和法线，构建 TBN 矩阵，发射半球射线比对深度。
+3. **模糊 Pass：** 用双边/邻域模糊抹平讨厌的噪点。
+4. **光照融合：** `Ambient *= AO`，完美实现拐角与死角的物理级立体死角阴影。
