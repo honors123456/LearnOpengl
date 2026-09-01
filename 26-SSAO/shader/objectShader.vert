@@ -12,12 +12,12 @@ out VS_OUT {
 } vs_out;
 
 void main(){
-    //世界空间坐标
-    vs_out.FragPos = vec3(model * vec4(aPos, 1.0));
-    //世界空间法线
-    vs_out.Normal = mat3(transpose(inverse(model))) * aNormal;
+    // SSAO 在观察空间计算：相机固定在原点，深度比较更直接。
+    vec4 viewPosition = view * model * vec4(aPos, 1.0);
+    vs_out.FragPos = viewPosition.xyz;
+    vs_out.Normal = mat3(transpose(inverse(view * model))) * aNormal;
     //纹理坐标
     vs_out.TexCoords = aTexCoords;
     
-    gl_Position = projection * view * vec4(vs_out.FragPos, 1.0);
+    gl_Position = projection * viewPosition;
 }

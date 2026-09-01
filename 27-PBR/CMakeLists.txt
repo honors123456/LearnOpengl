@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 # 定义工程名称，并声明当前工程会使用 C 和 C++。
-project(SSAO LANGUAGES C CXX)
+project(PBR LANGUAGES C CXX)
 
 # 指定 C++ 标准为 C++17，并要求编译器必须支持该标准。
 set(CMAKE_CXX_STANDARD 17)

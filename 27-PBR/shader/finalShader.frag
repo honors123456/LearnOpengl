@@ -7,31 +7,18 @@ uniform sampler2D gPosition;
 uniform sampler2D gNormal;
 uniform sampler2D gAlbedo;
 uniform sampler2D gSpecular;
-uniform sampler2D ssao;
-uniform sampler2D ssaoRaw;
-uniform int displayMode;
+uniform vec3 viewPos;
 
 struct Light {
     vec3 position;
     vec3 color;
 };
 
-const int LIGHT_COUNT = 1;
+const int LIGHT_COUNT = 100;
 uniform Light lights[LIGHT_COUNT];
 
 void main()
 {
-    float rawOcclusion = texture(ssaoRaw, TexCoords).r;
-    float blurredOcclusion = texture(ssao, TexCoords).r;
-    if (displayMode == 2) {
-        FragColor = vec4(vec3(rawOcclusion), 1.0);
-        return;
-    }
-    if (displayMode == 3) {
-        FragColor = vec4(vec3(blurredOcclusion), 1.0);
-        return;
-    }
-
     //纹理坐标
     vec3 fragPos = texture(gPosition, TexCoords).rgb;
     //法线
@@ -40,12 +27,8 @@ void main()
     vec3 albedo = pow(texture(gAlbedo, TexCoords).rgb, vec3(2.2));
     float specularStrength = texture(gSpecular, TexCoords).r;
 
-    // G-Buffer 使用观察空间，因此相机位置恒为原点。
-    vec3 viewDir = normalize(-fragPos);
-
-    // SSAO 只削弱环境光，不能错误地遮挡点光源产生的直接光。
-    float ambientOcclusion = displayMode == 0 ? 1.0 : blurredOcclusion;
-    vec3 lighting = 0.35 * albedo * ambientOcclusion;
+    vec3 viewDir = normalize(viewPos - fragPos);
+    vec3 lighting = 0.05 * albedo;
 
     for (int i = 0; i < LIGHT_COUNT; ++i) {
         vec3 lightDir = normalize(lights[i].position - fragPos);

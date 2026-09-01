@@ -20,10 +20,10 @@ void main()
 {
     // 几何 Pass 不计算光照，只把后续光照需要的数据写进 G-Buffer。
 
-    // 1. 输出世界空间坐标到 Attachment 0
+    // 1. 输出观察空间坐标到 Attachment 0，供 SSAO 比较邻域深度。
     gPosition = vec4(fs_in.FragPos, 1.0);
 
-    // 2. 输出世界空间法线到 Attachment 1
+    // 2. 输出观察空间法线到 Attachment 1。
     gNormal = vec4(normalize(fs_in.Normal), 1.0);
 
     // 3. 输出漫反射颜色到 Attachment 2，立方体有贴图材质，地面没有使用baseColor

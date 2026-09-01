@@ -7960,7 +7960,210 @@ vec3 ambient = vec3(0.3) * Albedo * AmbientOcclusion;
 
 ##### SSAO 全套工业级总结
 
-1. **CPU 准备：** 生成 64 个半球采样点和 4×44×4 随机旋转噪声。
+1. **CPU 准备：** 生成 64 个半球采样点和 4×4 随机旋转噪声。
 2. **SSAO 计算 Pass：** 逐像素利用 G-Buffer 的位置和法线，构建 TBN 矩阵，发射半球射线比对深度。
 3. **模糊 Pass：** 用双边/邻域模糊抹平讨厌的噪点。
 4. **光照融合：** `Ambient *= AO`，完美实现拐角与死角的物理级立体死角阴影。
+
+
+
+
+
+## 第三十章.PRB光照（基于物理的渲染）
+
+在前面的学习中，我们无论是用冯氏光照（Phong）、Blinn-Phong 还是自己魔改的衰减系数，本质上都有一个巨大的痛点：**美术材质全靠“猜”和“调参数”**（比如强行调高高光指数、瞎编镜面反射率）。同一个金属箱子，在不同的场景里经常显得像塑料或者橡胶。
+
+而 **PBR（基于物理的渲染）** 是现代 3A 游戏引擎（如 Unreal Engine 5、Frostbite）统一的工业级标准。它彻底抛弃了拍脑袋的经验公式，**用严谨的光学物理定律（能量守恒、微表面模型、菲涅尔效应）来模拟真实世界中光子与物质的交互！** 无论是什么材质（黄金、锈铁、皮革、塑料），在 PBR 世界里只需输入几张标准的物理贴图，就能呈现出绝对逼真的真实质感。
+
+
+
+#### 1.核心思想
+
+在传统的冯氏光照（Phong Lighting）中：
+
+1. **高光是假的：** 高光颜色通常直接乘以白色的光源颜色（`lightColor * spec`），导致不管是黄金、红苹果还是白塑料，它们反射出来的光斑全都是刺眼的白斑。
+2. **能量不守恒：** 亮部加得太猛，反射出来的光能甚至超过了照射进来的光能，物理上完全不可能。
+3. **参数全靠手调：** 粗糙度、反射率全凭美术特工在编辑器里盲目拉滑块，换个环境光就彻底露馅。
+
+**PBR 的核心**：**把光学物理定律搬进显卡！让渲染出来的物质无论在昏暗的烛光下，还是在正午的烈日下，都展现出绝对符合物理规律的真实光学反应。**
+
+
+
+#### 2.PBR 的三大基石理论
+
+##### 基石 1：微表面模型（Microfacet Model）
+
+- **物理事实：** 没有任何一个物体的表面在微观下是绝对光滑的。如果你拿显微镜去看一面看似光滑的镜子或金属，它其实布满了无数微小的、朝向各异的**微观凹凸面（Microfacets）**。
+- 对光的影响：
+  - **光滑表面：** 微表面朝向极度一致。当平行光照过来时，光线被整齐地反射出去（形成锐利刺眼的镜面高光）。
+  - **粗糙表面：** 微表面朝向杂乱无章。光线被四面八方随机散射（形成柔和、扩散的漫反射）。
+  - 这就是为什么我们只需要一个简单的 **粗糙度（Roughness）** 参数，就能完美控制从“完美镜子”到“粗糙木块”的所有材质！
+
+
+
+##### 基石 2：能量守恒（Energy Conservation）
+
+- **物理事实：** 离开表面的总光能（反射光 + 折射/吸收光），绝对**不能超过**照射到表面上的总光能。
+- **对光的影响**：在 PBR 中，**漫反射（Diffuse）和镜面反射（Specular）是互斥且此消彼长的**。
+  - 如果一个材质的镜面高光极强（比如纯金属），它就会把大部分光线直接反射走，导致它的漫反射分量几乎为零（金属没有纯色漫反射！纯金的反光里面夹杂的全是金色的镜面光）。
+
+
+
+##### 基石 3：金属度与非金属度的划分（Metallic）
+
+在 PBR 中，物质被极其清晰地划分为两大阵营：
+
+1. **绝缘体/双光介质（Dielectrics / Non-metals）：** 如木头、塑料、皮肤、布料。它们的反射率很低（固定在 2%~4% 左右），大部分光线会进入物体内部形成漫反射。
+2. **导体（Conductors / Metals）：** 如铁、金、铜、银。它们没有常规意义上的漫反射，所有光线都被自由电子瞬间反射，反射率极高（70%~100%）。
+
+- **神奇之处：** 美术只需要提供一张 **金属度贴图（Metallic Map，纯黑代表塑料，纯白代表金属）** 和一张 **粗糙度贴图（Roughness Map）**，再加上颜色贴图（Albedo），就能描述地球上 99% 的物质！
+
+
+
+#### 3.Cook-Torrance 镜面反射方程
+
+在 PBR 渲染管线中，计算微表面镜面反射的公式被称为 **Cook-Torrance 渲染方程**。它由三个核心子函数相乘组成：
+
+$$
+L_o(\mathbf{p}, \omega_o)
+= \int_{\Omega}
+\left(
+k_d\frac{\mathbf{c}}{\pi}
++
+\frac{D(\mathbf{h})\,F(\omega_o,\mathbf{h})\,G(\omega_i,\omega_o,\mathbf{h})}
+{4(\mathbf{n}\cdot\omega_o)(\mathbf{n}\cdot\omega_i)}
+\right)
+L_i(\mathbf{p},\omega_i)
+(\mathbf{n}\cdot\omega_i)\,d\omega_i
+$$
+
+其中，那个让无数人头皮发麻的镜面核心项 DFG/4(...)... 包含了大名鼎鼎的 **DFG 三大天王函数**：
+
+1. D（Distribution，法线分布函数 / Normal Distribution Function）：
+   - **作用：** 统计微观表面上，**有多少比例的微平面法线刚好朝向“半程向量（Halfway Vector）”**？
+   - **常用算法：** Trowbridge-Reitz GGX。它决定了高光斑点的大小和锐利度（粗糙度越小，D 越集中成一个小亮点）。
+2. F（Fresnel，菲涅尔方程 / Fresnel Equation）：
+   - **作用：** **当你的眼睛以极度倾斜的角度（边缘）去观察任何物体时，它的反射率都会瞬间暴增到 100%！**
+   - 经典直觉：你垂直低头看水面能看到水底，但斜着看湖面，水面变成了一面镜子。这就是菲涅尔效应。在 PBR 中，它决定了边缘发光的强弱。
+3. G（Geometry，几何遮蔽函数 / Geometry Function）：
+   - **作用：** 模拟微表面的“自相遮挡（Self-Shadowing）”。有些微平面虽然朝向正确，但被周围更高的微观山峰给挡住了，光线照不进去。
+
+
+
+#### 4.工业PBR片段着色器核心源码
+
+```glsl
+# version 330 core
+out vec4 FragColor;
+in vec2 TexCoords;
+in vec3 WorldPos;
+in vec3 Normal;
+
+// 材质贴图
+uniform sampler2D albedoMap;
+uniform sampler2D normalMap;
+uniform sampler2D metallicMap;
+uniform sampler2D roughnessMap;
+uniform sampler2D aoMap;
+
+// 光源属性
+uniform vec3 lightPositions[4];
+uniform vec3 lightColors[4];
+
+uniform vec3 camPos;
+
+const float PI = 3.14159265359;
+
+// -----------------------------------------------------------------
+// 1. 菲涅尔方程 (Fresnel-Schlick 近似公式)
+// -----------------------------------------------------------------
+vec3 FresnelSchlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// -----------------------------------------------------------------
+// 2. 法线分布函数 (Trowbridge-Reitz GGX)
+// -----------------------------------------------------------------
+float DistributionGGX(vec3 N, vec3 H, float roughness) {
+    float a      = roughness*roughness;
+    float a2     = a*a;
+    float NdotH  = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH*NdotH;
+    
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+    
+    return a2 / max(denom, 0.0000001); // 防止分母为 0
+}
+
+// -----------------------------------------------------------------
+// 3. 几何遮蔽函数 (Schlick-GGX)
+// -----------------------------------------------------------------
+float GeometrySchlickGGX(float NdotV, float roughness) {
+    float r = (roughness + 1.0);
+    float k = (r*r) / 8.0;
+
+    float denom = NdotV * (1.0 - k) + k;
+    return NdotV / max(denom, 0.0000001);
+}
+
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2  = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1  = GeometrySchlickGGX(NdotL, roughness);
+    return ggx1 * ggx2;
+}
+
+void main() {
+    // 采样 PBR 材质属性
+    vec3 albedo     = pow(texture(albedoMap, TexCoords).rgb, vec3(2.2)); // 转换为线性空间
+    float metallic  = texture(metallicMap, TexCoords).r;
+    float roughness = texture(roughnessMap, TexCoords).r;
+    float ao        = texture(aoMap, TexCoords).r;
+
+    vec3 N = normalize(Normal); // 或从法线贴图解包
+    vec3 V = normalize(camPos - WorldPos);
+
+    // 基础反射率 F0：非金属默认 0.04，金属则直接使用其 Albedo 固有色
+    vec3 F0 = vec3(0.04); 
+    F0 = mix(F0, albedo, metallic);
+	
+    vec3 Lo = vec3(0.0);
+    for(int i = 0; i < 4; ++i) {
+        // 计算每个光源的光路
+        vec3 L = normalize(lightPositions[i] - WorldPos);
+        vec3 H = normalize(V + L);
+        float distance = length(lightPositions[i] - WorldPos);
+        float attenuation = 1.0 / (distance * distance); // 物理平方反比衰减
+        vec3 radiance = lightColors[i] * attenuation;
+
+        // Cook-Torrance 镜面反射计算
+        float D = DistributionGGX(N, H, roughness);   
+        float G = GeometrySmith(N, V, L, roughness);      
+        vec3  F = FresnelSchlick(max(dot(H, V), 0.0), F0);
+        
+        vec3 numerator    = D * G * F;
+        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
+        vec3 specular     = numerator / denominator;
+        
+        // 能量守恒：折射率 (kD) 与反射率 (kS) 互斥
+        vec3 kS = F;
+        vec3 kD = vec3(1.0) - kS;
+        kD *= (1.0 - metallic); // 纯金属没有漫反射！
+
+        float NdotL = max(dot(N, L), 0.0);        
+        Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+    }
+    
+    // 环境光综合 (结合 AO)
+    vec3 ambient = vec3(0.03) * albedo * ao;
+    vec3 color = ambient + Lo;
+
+    // HDR 色调映射与 Gamma 校正
+    color = color / (color + vec3(1.0));
+    color = pow(color, vec3(1.0/2.2));
+
+    FragColor = vec4(color, 1.0);
+}
+```
