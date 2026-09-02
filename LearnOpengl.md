@@ -1,7 +1,3 @@
-
-
-
-
 # LearnOpengl
 
 
@@ -7768,71 +7764,156 @@ void main() {
 
 因为这一切计算只发生在当前屏幕的像素范围内（利用延迟渲染的 G-Position 和 G-Normal 纹理），所以它叫**屏幕空间（Screen-Space）** AO。
 
-
-
-#### 2.SSAO 实现代码
-
-要在屏幕上实时算出生动的 SSAO 暗影，管线分为四个步骤：
+##### 对于屏幕上的每一个像素点，在其周围的三维半球空间内随机采样若干个点，检测这些采样点是否落在了周围几何体的“内部”。如果很多采样点都在几何体内部，说明该点处于狭窄凹陷处，遮蔽率高（变暗）；反之则说明处于平整或凸起处（变亮）。
 
 
 
-##### 1.**C++ 端：生成半球采样核心（Kernel）与随机噪声纹理（Noise Texture）。**
+#### 2.SSAO 实现
 
-在 CPU 端，我们在以原点 `(0,0,0)` 为中心的**半球（Hemisphere）**内部，随机生成64 个采样点向量（Sample Kernel）。这些向量主要集中在法线正方向，用来模拟从表面向四周发射的探测视线。
+在 LearnOpenGL 的实现中，SSAO 通常挂载在**延迟渲染管线**之后，主要分为 三大阶段：
+
+##### [G-Buffer 准备] ──► [SSAO 渲染] ──► [光照计算应用]
 
 
 
-##### 半球采样向量（Sample Kernel）
+##### 1.准备阶段：G-Buffer (延迟渲染)
+
+##### 绘制物体，生成G-Buffer
 
 ```c++
-# include <vector>
-# include <random>
-# include <glm/glm.hpp>
+// G-Buffer：四张颜色纹理分别保存位置、法线、颜色和高光强度。
+  GLuint gBuffer = 0;
+  GLuint gPosition = 0, gNormal = 0, gAlbedo = 0, gSpecular = 0;
+  glGenFramebuffers(1, &gBuffer);
+  glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
 
-std::vector<glm::vec3> ssaoKernel;
-std::uniform_real_distribution<GLfloat> randomFloats(0.05.0f, 1.0f); // 随机小数生成器
-std::default_random_engine generator;
+  GLuint gTextures[] = {gPosition, gNormal, gAlbedo, gSpecular};
+  GLenum internalFormats[] = {GL_RGBA16F, GL_RGBA16F, GL_RGBA8, GL_RGBA8};
+  GLenum dataTypes[] = {GL_FLOAT, GL_FLOAT, GL_UNSIGNED_BYTE, GL_UNSIGNED_BYTE};
+  for (int i = 0; i < 4; ++i) {
+    glGenTextures(1, &gTextures[i]);
+    glBindTexture(GL_TEXTURE_2D, gTextures[i]);
+    glTexImage2D(GL_TEXTURE_2D, 0, internalFormats[i], W, H, 0, GL_RGBA,
+                 dataTypes[i], nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i,
+                           GL_TEXTURE_2D, gTextures[i], 0);
+  }
+  gPosition = gTextures[0];
+  gNormal = gTextures[1];
+  gAlbedo = gTextures[2];
+  gSpecular = gTextures[3];
 
-for (unsigned int i = 0; i < 64; ++i)
-{
-    // 在半球内随机生成向量 (Z 轴朝上，确保采样点都在表面外侧)
-    glm::vec3 sample(
-        randomFloats(generator) * 2.0f - 1.0f,
-        randomFloats(generator) * 2.0f - 1.0f,
-        randomFloats(generator) // 保证 Z 轴分量为正，朝向半球上方
-    );
-    sample = glm::normalize(sample);
-    sample *= randomFloats(generator); // 赋予随机长度
-    
-    // 权重的非线性缩放：让采样点更多地聚集在原点附近（越近越精确）
-    float scale = (float)i / 64.0f;
-    scale = glm::mix(0.1f, 1.0f, scale * scale);
-    sample *= scale;
-    
-    ssaoKernel.push_back(sample);
-}
+  //开启frag着色器的四个颜色纹理附件
+  //当前绑定 FBO 的颜色输出目标”。
+  GLenum attachments[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1,
+                          GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
+  glDrawBuffers(4, attachments);
+
+  //深度缓冲区附件
+  GLuint depthRBO = 0;
+  glGenRenderbuffers(1, &depthRBO);
+  glBindRenderbuffer(GL_RENDERBUFFER, depthRBO);
+  glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, W, H);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                            GL_RENDERBUFFER, depthRBO);
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    std::cerr << "G-Buffer framebuffer incomplete\n";
+    return -1;
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
 ```
 
 
 
-##### 生成 4×4 随机旋转噪声纹理
-
-因为 64 个采样点太少了，直接渲染会有巨大的马赛克噪点。我们用一张极小的 4×4旋转向量纹理，在每个像素处把半球随机旋转：
+绘制墙体和场景物体
 
 ```c++
-std::vector<glm::vec3> ssaoNoise;
-for (unsigned int i = 0; i < 16; i++)
-{
-    // 在切线空间的 XY 平面上生成随机旋转向量 (Z = 0)
-    glm::vec3 noise(randomFloats(generator) * 2.0f - 1.0f, randomFloats(generator) * 2.0f - 1.0f, 0.0f);
-    ssaoNoise.push_back(noise);
+glEnable(GL_DEPTH_TEST);
+glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
+glClearColor(0.02f, 0.02f, 0.02f, 1.0f);
+glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+objectShader.use();
+objectShader.setMat4("view", view);
+objectShader.setMat4("projection", projection);
+glBindVertexArray(cubeVAO);
+objectShader.setBool("useTexture", false);
+objectShader.setFloat("specularStrength", 0.18f);
+
+// 封装立方体绘制：只需传入模型矩阵与漫反射颜色
+auto drawCube = [&](const glm::mat4 &model, const glm::vec3 &color) {
+    objectShader.setMat4("model", model);
+    objectShader.setVec3("baseColor", color);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+};
+
+// 封闭房间的墙体
+const glm::vec3 roomColor(0.62f, 0.60f, 0.56f);
+drawCube(glm::scale(glm::translate(glm::mat4(1.0f),glm::vec3(0.0f, -2.1f, -2.6f)),glm::vec3(4.0f, 0.1f, 4.0f)),roomColor);
+drawCube(glm::scale(glm::translate(glm::mat4(1.0f),glm::vec3(0.0f, 0.0f, -6.5f)),glm::vec3(4.0f, 2.1f, 0.1f)),roomColor);
+drawCube(glm::scale(glm::translate(glm::mat4(1.0f),glm::vec3(-4.0f, 0.0f, -2.6f)),glm::vec3(0.1f, 2.1f, 4.0f)),roomColor);
+drawCube(glm::scale(glm::translate(glm::mat4(1.0f),glm::vec3(4.0f, 0.0f, -2.6f)),glm::vec3(0.1f, 2.1f, 4.0f)),roomColor);
+drawCube(glm::scale(glm::translate(glm::mat4(1.0f),glm::vec3(0.0f, 2.1f, -2.6f)),glm::vec3(4.0f, 0.1f, 4.0f)),roomColor);
+
+//大的立方体盒子
+glm::mat4 largeBox = glm::translate(glm::mat4(1.0f),glm::vec3(-0.9f, -1.15f, -3.1f));
+largeBox = glm::rotate(largeBox, glm::radians(24.0f),glm::vec3(0.0f, 1.0f, 0.0f));
+largeBox = glm::scale(largeBox, glm::vec3(0.9f));
+drawCube(largeBox, glm::vec3(0.52f, 0.37f, 0.26f));
+
+//小的立方体盒子
+glm::mat4 smallBox = glm::translate(glm::mat4(1.0f),glm::vec3(1.0f, -1.5f, -2.3f));
+smallBox = glm::rotate(smallBox, glm::radians(-18.0f),glm::vec3(0.0f, 1.0f, 0.0f));
+smallBox = glm::scale(smallBox, glm::vec3(0.55f));
+drawCube(smallBox, glm::vec3(0.36f, 0.44f, 0.48f));
+
+// 墙角球体
+glBindVertexArray(sphereVAO);
+objectShader.setVec3("baseColor", glm::vec3(0.45f, 0.31f, 0.21f));
+glm::mat4 cornerSphere = glm::translate(glm::mat4(1.0f), glm::vec3(2.65f, -1.35f, -5.55f));
+cornerSphere = glm::scale(cornerSphere, glm::vec3(0.72f));
+objectShader.setMat4("model", cornerSphere);
+glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(sphereIndices.size()),GL_UNSIGNED_INT, nullptr);
+```
+
+
+
+##### 2.SSAO渲染
+
+分为好几个阶段
+
+##### （1）准备阶段：半球采样核心（Kernel）与随机噪声纹理（Noise Texture
+
+```c++
+// 生成 64 个朝向法线半球的采样点。越靠近中心，采样点越密集。
+std::vector<glm::vec3> ssaoKernel;
+ssaoKernel.reserve(64);
+std::mt19937 ssaoRandomEngine(20260901u);
+std::uniform_real_distribution<float> randomZeroToOne(0.0f, 1.0f);
+for (int i = 0; i < 64; ++i) {
+    glm::vec3 sample(randomZeroToOne(ssaoRandomEngine) * 2.0f - 1.0f,
+                     randomZeroToOne(ssaoRandomEngine) * 2.0f - 1.0f,
+                     randomZeroToOne(ssaoRandomEngine));
+    sample = glm::normalize(sample);
+    sample *= randomZeroToOne(ssaoRandomEngine);
+    float scale = static_cast<float>(i) / 64.0f;
+    scale = 0.1f + 0.9f * scale * scale;
+    ssaoKernel.push_back(sample * scale);
 }
 
-unsigned int noiseTexture;
+// 4x4 随机旋转向量只位于切线平面，着色器会把它平铺到整个屏幕。
+std::vector<glm::vec3> ssaoNoise;
+ssaoNoise.reserve(16);
+for (int i = 0; i < 16; ++i) {
+    ssaoNoise.emplace_back(randomZeroToOne(ssaoRandomEngine) * 2.0f - 1.0f,randomZeroToOne(ssaoRandomEngine) * 2.0f - 1.0f，	 0.0f);
+}
+GLuint noiseTexture = 0;
 glGenTextures(1, &noiseTexture);
 glBindTexture(GL_TEXTURE_2D, noiseTexture);
-// 注意：使用 GL_RGB16F，且环绕模式设为 GL_REPEAT 以便在屏幕上平铺
-glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 4, 4, 0, GL_RGB, GL_FLOAT, &ssaoNoise[0]);
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, 4, 4, 0, GL_RGB, GL_FLOAT,
+             ssaoNoise.data());
 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -7841,119 +7922,303 @@ glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
 
 
-##### 2.SSAO 计算着色器（核心遮挡判定 `ssao.fs`）
+##### （2）创建原始SSAO 缓冲区和经过采样后的模糊的SSAO 缓冲区
 
-这是全场数学计算最密集的地方。我们利用延迟渲染导出的 `gPosition` 和 `gNormal`，逐像素进行半球射线检测：
+```c++
+GLuint ssaoFBO = 0, ssaoBlurFBO = 0;
+GLuint ssaoColorBuffer = 0, ssaoColorBufferBlur = 0;
+glGenFramebuffers(1, &ssaoFBO);
+glGenFramebuffers(1, &ssaoBlurFBO);
+glGenTextures(1, &ssaoColorBuffer);
+glGenTextures(1, &ssaoColorBufferBlur);
 
-```glsl
-# version 330 core
-out float FragColor; // 输出单通道的 AO 遮挡因子 (0.0 = 全黑死角, 1.0 = 无遮挡)
+glBindFramebuffer(GL_FRAMEBUFFER, ssaoFBO);
+glBindTexture(GL_TEXTURE_2D, ssaoColorBuffer);
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, W, H, 0, GL_RED, GL_FLOAT, nullptr);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                       ssaoColorBuffer, 0);
+if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    std::cerr << "SSAO framebuffer incomplete\n";
+    return -1;
+}
 
-in vec2 TexCoords;
+glBindFramebuffer(GL_FRAMEBUFFER, ssaoBlurFBO);
+glBindTexture(GL_TEXTURE_2D, ssaoColorBufferBlur);
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, W, H, 0, GL_RED, GL_FLOAT, nullptr);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                       ssaoColorBufferBlur, 0);
+if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    std::cerr << "SSAO blur framebuffer incomplete\n";
+    return -1;
+}
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-uniform sampler2D gPosition; // 延迟渲染的世界坐标快照
-uniform sampler2D gNormal;   // 延迟渲染的世界法线快照
-uniform sampler2D texNoise;  // 4x4 随机旋转噪声纹理
-
-uniform vec3 samples[64];    // CPU 传过来的 64 个半球采样点
-uniform mat4 projection;     // 玩家摄像机投影矩阵
-
-// 屏幕分辨率与 4x4 噪声纹理大小的比例 (用于在全屏上平铺噪声)
-const vec2 noiseScale = vec2(800.0/4.0, 600.0/4.0); // 假设屏幕是 800x600
-
-void main() {
-    // 1. 从 G-Buffer 中读取当前像素的世界坐标与法线
-    vec3 fragPos = texture(gPosition, TexCoords).xyz;
-    vec3 normal  = normalize(texture(gNormal, TexCoords).xyz);
-    
-    // 如果法线为零（说明是天空盒背景），直接满分无遮挡返回 1.0
-    if(length(normal) == 0.0) {
-        FragColor = 1.0;
-        return;
-    }
-
-    // 2. 采样噪声纹理，得到当前像素的随机旋转向量
-    vec3 randomVec = texture(texNoise, TexCoords * noiseScale).xyz;
-    
-    // 3. 利用 Gram-Schmidt 正交化，构建以当前法线为基准的 TBN 旋转矩阵
-    vec3 tangent   = normalize(randomVec - normal * dot(randomVec, normal));
-    vec3 bitangent = cross(normal, tangent);
-    mat3 TBN       = mat3(tangent, bitangent, normal);
-    
-    // 4. 遍历 64 个半球采样点，检测遮挡
-    float occlusion = 0.0;
-    float radius = 0.5;   // 采样半径 (控制阴影扩散的物理范围)
-    float bias   = 0.025; // 深度偏置 (防止自阴影粉刺)
-
-    for(int i = 0; i < 64; ++i) {
-        // A. 将采样点从切线空间转换到世界空间，并放置在当前像素 fragPos 附近
-        vec3 samplePos = TBN * samples[i]; 
-        samplePos = fragPos + samplePos * radius;
-        
-        // B. 把这个 3D 采样点投影回屏幕空间，去采 gPosition 纹理，获取其实际几何深度！
-        vec4 offset = vec4(samplePos, 1.0);
-        offset = projection * offset; // 投射到裁剪空间
-        offset.xyz /= offset.w;       // 透视除法
-        offset.xyz = offset.xyz * 0.5 + 0.5; // 映射到 [0, 1] 的屏幕 UV 空间
-        
-        // C. 获取该采样点正下方场景中实际几何体的深度值 (Z 坐标)
-        float sampleDepth = texture(gPosition, offset.xy).z; 
-        
-        // D. 核心遮挡判定：
-        // 如果场景里的实际深度 比 我们的半球采样点还要靠里（说明有物体挡在前面），
-        // 并且距离差在合理范围内（避免远处毫不相干的物体产生错误遮挡）：
-        float rangeCheck = smoothstep(0.0, 1.0, radius / abs(fragPos.z - sampleDepth));
-        if (sampleDepth >= samplePos.z + bias) {
-            occlusion += 1.0 * rangeCheck; // 产生遮挡！加重阴影
-        }
-    }
-    
-    // 5. 算出最终的遮挡系数并反转 (0.0 = 全遮挡变暗, 1.0 = 无遮挡)
-    occlusion = 1.0 - (occlusion / 64.0);
-    FragColor = occlusion;
+//上传原始数据纹理单元和采样点
+//gPosition,gNormal,texNoise是上面原始数据G-Buffer的纹理数据
+ssaoShader.use();
+ssaoShader.setInt("gPosition", 0);
+ssaoShader.setInt("gNormal", 1);
+ssaoShader.setInt("texNoise", 2);
+for (int i = 0; i < 64; ++i) {
+    ssaoShader.setVec3("samples[" + std::to_string(i) + "]", ssaoKernel[i]);
 }
 ```
 
 
 
-##### 3.SSAO 模糊着色器（消除颗粒感 `ssao_blur.fs`）
+##### （3）根据 G-Buffer 中的位置信息和法线信息，计算屏幕上每个像素周围的环境遮蔽程度，并生成一张原始 SSAO 纹理
 
-由于 64 个采样点在屏幕上会留下非常明显的噪点，我们必须用一个简单的 2×22×2 模糊滤镜对 SSAO 纹理进行平滑：
+```c++
+glDisable(GL_DEPTH_TEST);
+glBindFramebuffer(GL_FRAMEBUFFER, ssaoFBO);
+glClear(GL_COLOR_BUFFER_BIT);
+ssaoShader.use();
+ssaoShader.setMat4("projection", projection);
+glActiveTexture(GL_TEXTURE0);
+glBindTexture(GL_TEXTURE_2D, gPosition);
+glActiveTexture(GL_TEXTURE1);
+glBindTexture(GL_TEXTURE_2D, gNormal);
+glActiveTexture(GL_TEXTURE2);
+glBindTexture(GL_TEXTURE_2D, noiseTexture);
+glBindVertexArray(quadVAO);
+glDrawArrays(GL_TRIANGLES, 0, 6);
+```
+
+
+
+**局部空间（Local/Object Space）** $\xrightarrow{\text{Model Matrix}}$
+
+**世界空间（World Space）** $\xrightarrow{\text{View Matrix}}$
+
+**观察空间（View/Camera Space）** $\xrightarrow{\text{Projection Matrix}}$
+
+**裁剪空间（Clip Space）** $\xrightarrow{\text{透视除法} \div w}$
+
+**NDC 坐标（Normalized Device Coordinates）** $\xrightarrow{\text{Viewport/UV映射}}$
+
+**屏幕/纹理坐标（Screen/UV Space）**
+
+
+
+##### ssaoShader.frag（重点）
 
 ```glsl
-# version 330 core
+#version 330 core
+
 out float FragColor;
 in vec2 TexCoords;
 
-uniform sampler2D ssaoInput; // 刚算出来的粗糙 SSAO 纹理
+uniform sampler2D gPosition;
+uniform sampler2D gNormal;
+uniform sampler2D texNoise;
+uniform vec3 samples[64];	//切线空间坐标
+uniform mat4 projection;
 
-void main() {
+const int KERNEL_SIZE = 64;
+const float RADIUS = 0.6;
+const float BIAS = 0.025;	//BIAS 是深度容差常数，用来过滤深度精度误差造成的自遮挡，数值越小越干净但保留更多细节，越大越能压噪但可能漏掉真遮挡
+
+void main()
+{
+    //获取像素坐标和法线向量,观察空间
+    vec3 fragPos = texture(gPosition, TexCoords).xyz;
+    vec3 normal = normalize(texture(gNormal, TexCoords).xyz);
+
+    // 4x4 噪声纹理平铺到屏幕，为每个片段随机旋转采样半球。
+    vec2 noiseScale = vec2(textureSize(gPosition, 0)) /vec2(textureSize(texNoise, 0));
+    vec3 randomVec = normalize(texture(texNoise, TexCoords * noiseScale).xyz);
+
+    //Gram-Schmidt 正交化建立 TBN 矩阵,观察空间的矩阵
+    vec3 tangent = normalize(randomVec - normal * dot(randomVec, normal));
+    vec3 bitangent = cross(normal, tangent);
+    mat3 tbn = mat3(tangent, bitangent, normal);
+
+    //生成采样点
+    float occlusion = 0.0;
+    for (int i = 0; i < KERNEL_SIZE; ++i) {
+        //tbn * samples[i] * RADIUS 将这个半球向量旋转到观察空间，使其朝向当前像素的法线方向
+        //以当前像素为原点，向周围发射一个半径为 RADIUS (0.6) 的探针点。
+        //坐标(空间A) = TBN（空间A）* 切线空间，由TBN得空间决定
+        vec3 samplePos = fragPos + tbn * samples[i] * RADIUS;
+
+        // 把观察空间坐标转为屏幕纹理坐标。
+        vec4 offset = projection * vec4(samplePos, 1.0);
+        offset.xyz /= offset.w;
+        offset.xyz = offset.xyz * 0.5 + 0.5;
+
+        //真实得物体在探针点对应得位置得深度信息，但是有问题的是，发射一个半径为 RADIUS (0.6) 的探针点，如果在0.6的范围内，有好几个物体前后排布呢，所		//以是哪个的物体深度
+        float sampleDepth = texture(gPosition, offset.xy).z;
+        //abs(fragPos.z - sampleDepth)计算当前像素点与采样到的真实几何体之间的实际距离。
+        //如果距离小于 RADIUS，RADIUS / abs(fragPos.z - sampleDepth)会>=1;距离极大），比值会趋近于0。
+        float rangeCheck = smoothstep(0.0, 1.0, RADIUS / abs(fragPos.z - sampleDepth));
+        //记住，现在是观察空间，越远 z 越小（越负），越近 z 越大
+        //探针那个屏幕位置的真实表面，是否比探针更靠近相机（把探针挡住了）？挡住了就记一次遮蔽
+        occlusion += (sampleDepth >= samplePos.z + BIAS ? 1.0 : 0.0) *rangeCheck;
+    }
+
+    FragColor = 1.0 - occlusion / float(KERNEL_SIZE);
+}
+```
+
+
+
+##### （4）平滑原始SSAO的随机颗粒
+
+##### 把上一阶段 `ssaoShader` 算出来的充满高频噪点的灰度图（`ssaoColorBuffer`），传给 `ssaoBlurShader` 做一次 $4 \times 4$ 的均值滤波模糊，并将去除噪点后的细腻 AO 贴图渲染写入到 `ssaoBlurFBO` 中。
+
+```c++
+glBindFramebuffer(GL_FRAMEBUFFER, ssaoBlurFBO);
+glClear(GL_COLOR_BUFFER_BIT);
+ssaoBlurShader.use();
+glActiveTexture(GL_TEXTURE0);
+glBindTexture(GL_TEXTURE_2D, ssaoColorBuffer);
+glDrawArrays(GL_TRIANGLES, 0, 6);
+```
+
+
+
+ssaoBlurShader.frag
+
+```glsl
+#version 330 core
+
+out float FragColor;
+in vec2 TexCoords;
+
+uniform sampler2D ssaoInput;
+
+void main()
+{
+    // 对原始 SSAO 做 4x4 盒式模糊，消除随机采样产生的颗粒噪声。
     vec2 texelSize = 1.0 / vec2(textureSize(ssaoInput, 0));
     float result = 0.0;
     
-    // 采集周围 2x2 邻域求平均值
+    // 4x4 均值滤波：取当前像素周围 4x4 范围内的采样点求平均
     for (int x = -2; x < 2; ++x) {
         for (int y = -2; y < 2; ++y) {
             vec2 offset = vec2(float(x), float(y)) * texelSize;
             result += texture(ssaoInput, TexCoords + offset).r;
         }
     }
-    FragColor = result / (4.0 * 4.0);
+    FragColor = result / 16.0;
 }
 ```
 
 
 
-##### 4.光照聚合阶段（将 AO 乘入环境光）
+##### 3.最终阶段：光照计算
 
-在最后的光照 Pass（或者延迟渲染的 Lighting Pass）中，我们将这张平滑后的 SSAO 遮挡图直接**乘以环境光（Ambient）**：
+光照 Pass：环境光乘以 AO，直接光照保持不变。
+
+```c++
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
+glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+lightingShader.use();
+lightingShader.setInt("displayMode", displayMode);
+for (int i = 0; i < LIGHT_COUNT; ++i) {
+    glm::vec3 lightPositionView =glm::vec3(view * glm::vec4(lightPositions[i], 1.0f));
+    lightingShader.setVec3("lights[" + std::to_string(i) + "].position",lightPositionView);
+    lightingShader.setVec3("lights[" + std::to_string(i) + "].color",lightColors[i]);
+}
+
+//绘制之前的4个纹理
+glActiveTexture(GL_TEXTURE0);
+glBindTexture(GL_TEXTURE_2D, gPosition);
+glActiveTexture(GL_TEXTURE1);
+glBindTexture(GL_TEXTURE_2D, gNormal);
+glActiveTexture(GL_TEXTURE2);
+glBindTexture(GL_TEXTURE_2D, gAlbedo);
+glActiveTexture(GL_TEXTURE3);
+glBindTexture(GL_TEXTURE_2D, gSpecular);
+glActiveTexture(GL_TEXTURE4);
+glBindTexture(GL_TEXTURE_2D, ssaoColorBufferBlur);
+glActiveTexture(GL_TEXTURE5);
+glBindTexture(GL_TEXTURE_2D, ssaoColorBuffer);
+
+glBindVertexArray(quadVAO);
+glDrawArrays(GL_TRIANGLES, 0, 6);
+```
+
+
+
+finalShader.frag
 
 ```glsl
-vec3 Albedo = texture(gAlbedo, TexCoords).rgb;
-float AmbientOcclusion = texture(ssaoBlur, TexCoords).r; // 👈 采样平滑后的 AO 图
+#version 330 core
 
-// 核心融合：环境光被 AO 因子严重衰减，墙角和缝隙瞬间陷入柔和的暗影！
-vec3 ambient = vec3(0.3) * Albedo * AmbientOcclusion; 
+out vec4 FragColor;
+in vec2 TexCoords;
+
+uniform sampler2D gPosition;
+uniform sampler2D gNormal;
+uniform sampler2D gAlbedo;
+uniform sampler2D gSpecular;
+uniform sampler2D ssao;     // 原始遮蔽：SSAO Pass 输出（ssaoColorBuffer）
+uniform sampler2D ssaoBlur; // 模糊遮蔽：Blur Pass 输出（ssaoColorBufferBlur）
+uniform int displayMode;
+
+struct Light {
+    vec3 position;
+    vec3 color;
+};
+
+const int LIGHT_COUNT = 1;
+uniform Light lights[LIGHT_COUNT];
+
+void main()
+{
+    //原始带噪点 SSAO
+    float rawOcclusion = texture(ssao, TexCoords).r;
+    //模糊后 SSAO
+    float blurredOcclusion = texture(ssaoBlur, TexCoords).r;
+    
+    if (displayMode == 2) {
+        FragColor = vec4(vec3(rawOcclusion), 1.0);
+        return;
+    }
+    if (displayMode == 3) {
+        FragColor = vec4(vec3(blurredOcclusion), 1.0);
+        return;
+    }
+
+    //MODE 0/1:[环境光 (含 SSAO)] + [直接光 (Blinn-Phong)];
+    //纹理坐标
+    vec3 fragPos = texture(gPosition, TexCoords).rgb;
+    //法线
+    vec3 normal = normalize(texture(gNormal, TexCoords).rgb);
+    //漫反射
+    vec3 albedo = pow(texture(gAlbedo, TexCoords).rgb, vec3(2.2));
+    float specularStrength = texture(gSpecular, TexCoords).r;
+
+    // G-Buffer 使用观察空间，因此相机位置恒为原点。
+    vec3 viewDir = normalize(-fragPos);
+
+    // SSAO 只削弱环境光，不能错误地遮挡点光源产生的直接光。
+    float ambientOcclusion = displayMode == 0 ? 1.0 : blurredOcclusion;
+    vec3 lighting = 0.35 * albedo * ambientOcclusion;
+
+    for (int i = 0; i < LIGHT_COUNT; ++i) {
+        vec3 lightDir = normalize(lights[i].position - fragPos);
+        float diffuse = max(dot(normal, lightDir), 0.0);
+        vec3 halfwayDir = normalize(lightDir + viewDir);
+        float specular = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
+
+        //光线衰减因子
+        float distanceToLight = length(lights[i].position - fragPos);
+        float attenuation = 1.0 / (1.0 + 0.22 * distanceToLight
+                                  + 0.20 * distanceToLight * distanceToLight);
+
+        lighting += (albedo * diffuse + vec3(specular * specularStrength))
+                    * lights[i].color * attenuation;
+    }
+
+    // G-Buffer 中的颜色按 sRGB 保存，光照在线性空间计算，最后转回显示空间。
+    FragColor = vec4(pow(lighting, vec3(1.0 / 2.2)), 1.0);
+}
 ```
 
 
@@ -8053,117 +8318,199 @@ $$
 #### 4.工业PBR片段着色器核心源码
 
 ```glsl
-# version 330 core
+#version 330 core
 out vec4 FragColor;
-in vec2 TexCoords;
+
 in vec3 WorldPos;
 in vec3 Normal;
+in vec3 LocalPos;
 
-// 材质贴图
-uniform sampler2D albedoMap;
-uniform sampler2D normalMap;
-uniform sampler2D metallicMap;
-uniform sampler2D roughnessMap;
-uniform sampler2D aoMap;
-
-// 光源属性
+uniform vec3 camPos;
+uniform vec3 albedo;
+uniform float metallic;
+uniform float roughness;
+uniform float ao;
+uniform int materialType;
 uniform vec3 lightPositions[4];
 uniform vec3 lightColors[4];
 
-uniform vec3 camPos;
-
 const float PI = 3.14159265359;
 
-// -----------------------------------------------------------------
-// 1. 菲涅尔方程 (Fresnel-Schlick 近似公式)
-// -----------------------------------------------------------------
-vec3 FresnelSchlick(float cosTheta, vec3 F0) {
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+float randomValue(vec3 p)
+{
+    return fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
 }
 
-// -----------------------------------------------------------------
-// 2. 法线分布函数 (Trowbridge-Reitz GGX)
-// -----------------------------------------------------------------
-float DistributionGGX(vec3 N, vec3 H, float roughness) {
-    float a      = roughness*roughness;
-    float a2     = a*a;
-    float NdotH  = max(dot(N, H), 0.0);
-    float NdotH2 = NdotH*NdotH;
-    
-    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
-    denom = PI * denom * denom;
-    
-    return a2 / max(denom, 0.0000001); // 防止分母为 0
-}
-
-// -----------------------------------------------------------------
-// 3. 几何遮蔽函数 (Schlick-GGX)
-// -----------------------------------------------------------------
-float GeometrySchlickGGX(float NdotV, float roughness) {
-    float r = (roughness + 1.0);
-    float k = (r*r) / 8.0;
-
-    float denom = NdotV * (1.0 - k) + k;
-    return NdotV / max(denom, 0.0000001);
-}
-
-float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
-    float NdotV = max(dot(N, V), 0.0);
-    float NdotL = max(dot(N, L), 0.0);
-    float ggx2  = GeometrySchlickGGX(NdotV, roughness);
-    float ggx1  = GeometrySchlickGGX(NdotL, roughness);
-    return ggx1 * ggx2;
-}
-
-void main() {
-    // 采样 PBR 材质属性
-    vec3 albedo     = pow(texture(albedoMap, TexCoords).rgb, vec3(2.2)); // 转换为线性空间
-    float metallic  = texture(metallicMap, TexCoords).r;
-    float roughness = texture(roughnessMap, TexCoords).r;
-    float ao        = texture(aoMap, TexCoords).r;
-
-    vec3 N = normalize(Normal); // 或从法线贴图解包
-    vec3 V = normalize(camPos - WorldPos);
-
-    // 基础反射率 F0：非金属默认 0.04，金属则直接使用其 Albedo 固有色
-    vec3 F0 = vec3(0.04); 
-    F0 = mix(F0, albedo, metallic);
-	
-    vec3 Lo = vec3(0.0);
-    for(int i = 0; i < 4; ++i) {
-        // 计算每个光源的光路
-        vec3 L = normalize(lightPositions[i] - WorldPos);
-        vec3 H = normalize(V + L);
-        float distance = length(lightPositions[i] - WorldPos);
-        float attenuation = 1.0 / (distance * distance); // 物理平方反比衰减
-        vec3 radiance = lightColors[i] * attenuation;
-
-        // Cook-Torrance 镜面反射计算
-        float D = DistributionGGX(N, H, roughness);   
-        float G = GeometrySmith(N, V, L, roughness);      
-        vec3  F = FresnelSchlick(max(dot(H, V), 0.0), F0);
-        
-        vec3 numerator    = D * G * F;
-        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-        vec3 specular     = numerator / denominator;
-        
-        // 能量守恒：折射率 (kD) 与反射率 (kS) 互斥
-        vec3 kS = F;
-        vec3 kD = vec3(1.0) - kS;
-        kD *= (1.0 - metallic); // 纯金属没有漫反射！
-
-        float NdotL = max(dot(N, L), 0.0);        
-        Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+vec3 materialAlbedo()
+{
+    if (materialType == 0) {
+        // 暗褐色砖块：球面方向构造经纬砖缝，展示粗糙非金属。
+        vec3 n = normalize(LocalPos);
+        float u = atan(n.z, n.x) / (2.0 * PI) + 0.5;
+        float v = asin(clamp(n.y, -1.0, 1.0)) / PI + 0.5;
+        float row = floor(v * 8.0);
+        float shiftedU = u + mod(row, 2.0) * 0.065;
+        float mortar = step(0.075, fract(v * 8.0)) *
+                       step(0.055, fract(shiftedU * 13.0));
+        vec3 brick = albedo * (0.72 + 0.28 * randomValue(floor(LocalPos * 9.0)));
+        return mix(vec3(0.035, 0.045, 0.052), brick, mortar);
     }
-    
-    // 环境光综合 (结合 AO)
-    vec3 ambient = vec3(0.03) * albedo * ao;
-    vec3 color = ambient + Lo;
+    if (materialType == 2) {
+        // 绿色粗糙表面：高频颜色变化模拟草地或苔藓。
+        float grain = randomValue(floor(LocalPos * 55.0));
+        return albedo * mix(0.55, 1.35, grain);
+    }
+    if (materialType == 4) {
+        // 红色大理石：低频波纹叠加亮色矿脉。
+        float veins = sin((LocalPos.x + LocalPos.y * 0.55 +
+                           sin(LocalPos.z * 7.0) * 0.18) * 13.0);
+        float veinMask = smoothstep(0.72, 0.98, abs(veins));
+        return mix(albedo, vec3(0.72, 0.61, 0.57), veinMask * 0.75);
+    }
+    return albedo;
+}
 
-    // HDR 色调映射与 Gamma 校正
+float distributionGGX(vec3 N, vec3 H, float value)
+{
+    float a = value * value;
+    float a2 = a * a;
+    float nDotH = max(dot(N, H), 0.0);
+    float denominator = nDotH * nDotH * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * denominator * denominator, 0.0001);
+}
+
+float geometrySchlickGGX(float nDotV, float value)
+{
+    float r = value + 1.0;
+    float k = (r * r) / 8.0;
+    return nDotV / (nDotV * (1.0 - k) + k);
+}
+
+float geometrySmith(vec3 N, vec3 V, vec3 L, float value)
+{
+    return geometrySchlickGGX(max(dot(N, V), 0.0), value) *
+           geometrySchlickGGX(max(dot(N, L), 0.0), value);
+}
+
+vec3 fresnelSchlick(float cosTheta, vec3 f0)
+{
+    return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+void main()
+{
+    vec3 baseColor = materialAlbedo();
+    vec3 N = normalize(Normal);
+    vec3 V = normalize(camPos - WorldPos);
+    vec3 f0 = mix(vec3(0.04), baseColor, metallic);
+    vec3 directLighting = vec3(0.0);
+
+    for (int i = 0; i < 4; ++i) {
+        vec3 lightVector = lightPositions[i] - WorldPos;
+        float distanceToLight = length(lightVector);
+        vec3 L = lightVector / distanceToLight;
+        vec3 H = normalize(V + L);
+        vec3 radiance = lightColors[i] /
+                        max(distanceToLight * distanceToLight, 0.01);
+
+        float ndf = distributionGGX(N, H, roughness);
+        float geometry = geometrySmith(N, V, L, roughness);
+        vec3 fresnel = fresnelSchlick(max(dot(H, V), 0.0), f0);
+        vec3 numerator = ndf * geometry * fresnel;
+        float denominator = 4.0 * max(dot(N, V), 0.0) *
+                            max(dot(N, L), 0.0) + 0.0001;
+        vec3 specular = numerator / denominator;
+
+        vec3 kS = fresnel;
+        vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+        float nDotL = max(dot(N, L), 0.0);
+        directLighting += (kD * baseColor / PI + specular) * radiance * nDotL;
+    }
+
+    // 本章暂未引入 IBL，因此用很小的环境项避免未受光区域完全变黑。
+    vec3 color = vec3(0.035) * baseColor * ao + directLighting;
     color = color / (color + vec3(1.0));
-    color = pow(color, vec3(1.0/2.2));
-
+    color = pow(color, vec3(1.0 / 2.2));
     FragColor = vec4(color, 1.0);
 }
 ```
+
+
+
+渲染循环
+
+```c++
+while (!glfwWindowShouldClose(window)) {
+    processInput(window);
+
+    float yaw = glm::radians(orbitYaw);
+    float pitch = glm::radians(orbitPitch);
+    glm::vec3 orbitOffset(
+        orbitDistance * std::cos(pitch) * std::cos(yaw),
+        orbitDistance * std::sin(pitch),
+        orbitDistance * std::cos(pitch) * std::sin(yaw));
+    camera.Position = orbitOffset;
+
+    //观察矩阵和投影矩阵
+    glm::mat4 view = glm::lookAt(camera.Position, glm::vec3(0.0f),glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), static_cast<float>(W) / H, 0.1f, 100.0f);
+
+    glClearColor(0.56f, 0.43f, 0.31f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    pbrShader.use();
+    pbrShader.setMat4("view", view);
+    pbrShader.setMat4("projection", projection);
+    pbrShader.setVec3("camPos", camera.Position);
+    pbrShader.setFloat("ao", 1.0f);
+    for (int i = 0; i < 4; ++i) {
+      pbrShader.setVec3("lightPositions[" + std::to_string(i) + "]",lightPositions[i]);
+      pbrShader.setVec3("lightColors[" + std::to_string(i) + "]",lightColors[i]);
+    }
+
+    //绘制背景板
+    glBindVertexArray(panelVAO);
+    glm::mat4 panelModel =glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -2.2f));
+    panelModel = glm::scale(panelModel, glm::vec3(6.7f, 4.0f, 1.0f));
+    pbrShader.setMat4("model", panelModel);
+    pbrShader.setVec3("albedo", glm::vec3(0.48f, 0.32f, 0.20f));
+    pbrShader.setFloat("metallic", 0.0f);
+    pbrShader.setFloat("roughness", 1.0f);
+    pbrShader.setInt("materialType", 5);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    //绘制球体
+    glBindVertexArray(sphereVAO);
+    for (std::size_t i = 0; i < materials.size(); ++i) {
+      glm::mat4 model =
+          glm::translate(glm::mat4(1.0f), spherePositions[i]);
+      model = glm::scale(model, glm::vec3(0.82f));
+      pbrShader.setMat4("model", model);
+      pbrShader.setVec3("albedo", materials[i].albedo);
+      pbrShader.setFloat("metallic", materials[i].metallic);
+      pbrShader.setFloat("roughness", materials[i].roughness);
+      pbrShader.setInt("materialType", materials[i].type);
+      glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(sphereIndices.size()),
+                     GL_UNSIGNED_INT, nullptr);
+    }
+
+    // 底部两个小球显示两个近距离暖色点光源的位置。
+    lightShader.use();
+    lightShader.setMat4("view", view);
+    lightShader.setMat4("projection", projection);
+    glBindVertexArray(sphereVAO);
+    for (int i = 2; i < 4; ++i) {
+      glm::mat4 model =
+          glm::translate(glm::mat4(1.0f), lightPositions[i]);
+      model = glm::scale(model, glm::vec3(0.14f));
+      lightShader.setMat4("model", model);
+      lightShader.setVec3("lightColor", lightColors[i] * 0.025f);
+      glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(sphereIndices.size()),
+                     GL_UNSIGNED_INT, nullptr);
+    }
+
+    glfwSwapBuffers(window);
+    glfwPollEvents();
+  }
+```
+

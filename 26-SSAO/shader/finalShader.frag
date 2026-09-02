@@ -7,8 +7,8 @@ uniform sampler2D gPosition;
 uniform sampler2D gNormal;
 uniform sampler2D gAlbedo;
 uniform sampler2D gSpecular;
-uniform sampler2D ssao;
-uniform sampler2D ssaoRaw;
+uniform sampler2D ssao;     // 原始遮蔽：SSAO Pass 输出（ssaoColorBuffer）
+uniform sampler2D ssaoBlur; // 模糊遮蔽：Blur Pass 输出（ssaoColorBufferBlur）
 uniform int displayMode;
 
 struct Light {
@@ -21,14 +21,11 @@ uniform Light lights[LIGHT_COUNT];
 
 void main()
 {
-    float rawOcclusion = texture(ssaoRaw, TexCoords).r;
-    float blurredOcclusion = texture(ssao, TexCoords).r;
+    float rawOcclusion = texture(ssao, TexCoords).r;
+    float blurredOcclusion = texture(ssaoBlur, TexCoords).r;
     if (displayMode == 2) {
+        // 仅原始 AO 单独显示，模糊版只参与下方光照，不再单独预览。
         FragColor = vec4(vec3(rawOcclusion), 1.0);
-        return;
-    }
-    if (displayMode == 3) {
-        FragColor = vec4(vec3(blurredOcclusion), 1.0);
         return;
     }
 

@@ -132,14 +132,14 @@ int main() {
   glEnable(GL_DEPTH_TEST); // 几何 Pass 需要深度剔除
 
   // 编译并链接各 Pass 使用的着色器
-  Shader geometryShader(SHADER_DIR "/objectShader.vert",
-                        SHADER_DIR "/objectShader.frag");
+  Shader objectShader(SHADER_DIR "/objectShader.vert",
+                      SHADER_DIR "/objectShader.frag");
   Shader lightingShader(SHADER_DIR "/finalShader.vert",
                         SHADER_DIR "/finalShader.frag");
   Shader ssaoShader(SHADER_DIR "/ssaoShader.vert",
                     SHADER_DIR "/ssaoShader.frag");
-  Shader blurShader(SHADER_DIR "/blurShader.vert",
-                    SHADER_DIR "/blurShader.frag");
+  Shader ssaoBlurShader(SHADER_DIR "/ssaoBlurShader.vert",
+                        SHADER_DIR "/ssaoBlurShader.frag");
   Shader lightShader(SHADER_DIR "/lightShader.vert",
                      SHADER_DIR "/lightShader.frag");
 
@@ -355,15 +355,13 @@ int main() {
   std::vector<glm::vec3> ssaoNoise;
   ssaoNoise.reserve(16);
   for (int i = 0; i < 16; ++i) {
-    ssaoNoise.emplace_back(randomZeroToOne(ssaoRandomEngine) * 2.0f - 1.0f,
-                           randomZeroToOne(ssaoRandomEngine) * 2.0f - 1.0f,
-                           0.0f);
+    ssaoNoise.emplace_back(randomZeroToOne(ssaoRandomEngine) * 2.0f - 1.0f,randomZeroToOne(ssaoRandomEngine) * 2.0f - 1.0f,0.0f);
   }
+  
   GLuint noiseTexture = 0;
   glGenTextures(1, &noiseTexture);
   glBindTexture(GL_TEXTURE_2D, noiseTexture);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, 4, 4, 0, GL_RGB, GL_FLOAT,
-               ssaoNoise.data());
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, 4, 4, 0, GL_RGB, GL_FLOAT,ssaoNoise.data());
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -375,8 +373,8 @@ int main() {
   lightingShader.setInt("gNormal", 1);
   lightingShader.setInt("gAlbedo", 2);
   lightingShader.setInt("gSpecular", 3);
-  lightingShader.setInt("ssao", 4);
-  lightingShader.setInt("ssaoRaw", 5);
+  lightingShader.setInt("ssaoBlur", 4); // 单元4 → ssaoColorBufferBlur（模糊遮蔽）
+  lightingShader.setInt("ssao", 5);     // 单元5 → ssaoColorBuffer（原始遮蔽）
 
   ssaoShader.use();
   ssaoShader.setInt("gPosition", 0);
@@ -386,8 +384,8 @@ int main() {
     ssaoShader.setVec3("samples[" + std::to_string(i) + "]", ssaoKernel[i]);
   }
 
-  blurShader.use();
-  blurShader.setInt("ssaoInput", 0);
+  ssaoBlurShader.use();
+  ssaoBlurShader.setInt("ssaoInput", 0);
 
   // 点光源配置：位置与颜色（颜色为 HDR 数值，>1 才能产生高光）
   static constexpr int LIGHT_COUNT = 1;
@@ -419,66 +417,47 @@ int main() {
     glClearColor(0.02f, 0.02f, 0.02f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    geometryShader.use();
-    geometryShader.setMat4("view", view);
-    geometryShader.setMat4("projection", projection);
+    objectShader.use();
+    objectShader.setMat4("view", view);
+    objectShader.setMat4("projection", projection);
     glBindVertexArray(cubeVAO);
-    geometryShader.setBool("useTexture", false);
-    geometryShader.setFloat("specularStrength", 0.18f);
+    objectShader.setBool("useTexture", false);
+    objectShader.setFloat("specularStrength", 0.18f);
 
     // 封装立方体绘制：只需传入模型矩阵与漫反射颜色
     auto drawCube = [&](const glm::mat4 &model, const glm::vec3 &color) {
-      geometryShader.setMat4("model", model);
-      geometryShader.setVec3("baseColor", color);
+      objectShader.setMat4("model", model);
+      objectShader.setVec3("baseColor", color);
       glDrawArrays(GL_TRIANGLES, 0, 36);
     };
 
-    // 封闭房间提供大量墙角、接触面和狭窄区域，最适合观察 SSAO。
+    // 封闭房间的墙体
     const glm::vec3 roomColor(0.62f, 0.60f, 0.56f);
-    drawCube(glm::scale(glm::translate(glm::mat4(1.0f),
-                                      glm::vec3(0.0f, -2.1f, -2.6f)),
-                        glm::vec3(4.0f, 0.1f, 4.0f)),
-             roomColor);
-    drawCube(glm::scale(glm::translate(glm::mat4(1.0f),
-                                      glm::vec3(0.0f, 0.0f, -6.5f)),
-                        glm::vec3(4.0f, 2.1f, 0.1f)),
-             roomColor);
-    drawCube(glm::scale(glm::translate(glm::mat4(1.0f),
-                                      glm::vec3(-4.0f, 0.0f, -2.6f)),
-                        glm::vec3(0.1f, 2.1f, 4.0f)),
-             roomColor);
-    drawCube(glm::scale(glm::translate(glm::mat4(1.0f),
-                                      glm::vec3(4.0f, 0.0f, -2.6f)),
-                        glm::vec3(0.1f, 2.1f, 4.0f)),
-             roomColor);
-    drawCube(glm::scale(glm::translate(glm::mat4(1.0f),
-                                      glm::vec3(0.0f, 2.1f, -2.6f)),
-                        glm::vec3(4.0f, 0.1f, 4.0f)),
-             roomColor);
+    drawCube(glm::scale(glm::translate(glm::mat4(1.0f),glm::vec3(0.0f, -2.1f, -2.6f)),glm::vec3(4.0f, 0.1f, 4.0f)),roomColor);
+    drawCube(glm::scale(glm::translate(glm::mat4(1.0f),glm::vec3(0.0f, 0.0f, -6.5f)),glm::vec3(4.0f, 2.1f, 0.1f)),roomColor);
+    drawCube(glm::scale(glm::translate(glm::mat4(1.0f),glm::vec3(-4.0f, 0.0f, -2.6f)),glm::vec3(0.1f, 2.1f, 4.0f)),roomColor);
+    drawCube(glm::scale(glm::translate(glm::mat4(1.0f),glm::vec3(4.0f, 0.0f, -2.6f)),glm::vec3(0.1f, 2.1f, 4.0f)),roomColor);
+    drawCube(glm::scale(glm::translate(glm::mat4(1.0f),glm::vec3(0.0f, 2.1f, -2.6f)),glm::vec3(4.0f, 0.1f, 4.0f)),roomColor);
 
-    glm::mat4 largeBox = glm::translate(glm::mat4(1.0f),
-                                        glm::vec3(-0.9f, -1.15f, -3.1f));
-    largeBox = glm::rotate(largeBox, glm::radians(24.0f),
-                           glm::vec3(0.0f, 1.0f, 0.0f));
+    //大的立方体盒子
+    glm::mat4 largeBox = glm::translate(glm::mat4(1.0f),glm::vec3(-0.9f, -1.15f, -3.1f));
+    largeBox = glm::rotate(largeBox, glm::radians(24.0f),glm::vec3(0.0f, 1.0f, 0.0f));
     largeBox = glm::scale(largeBox, glm::vec3(0.9f));
     drawCube(largeBox, glm::vec3(0.52f, 0.37f, 0.26f));
 
-    glm::mat4 smallBox = glm::translate(glm::mat4(1.0f),
-                                        glm::vec3(1.0f, -1.5f, -2.3f));
-    smallBox = glm::rotate(smallBox, glm::radians(-18.0f),
-                           glm::vec3(0.0f, 1.0f, 0.0f));
+    //小的立方体盒子
+    glm::mat4 smallBox = glm::translate(glm::mat4(1.0f),glm::vec3(1.0f, -1.5f, -2.3f));
+    smallBox = glm::rotate(smallBox, glm::radians(-18.0f),glm::vec3(0.0f, 1.0f, 0.0f));
     smallBox = glm::scale(smallBox, glm::vec3(0.55f));
     drawCube(smallBox, glm::vec3(0.36f, 0.44f, 0.48f));
 
-    // 墙角球体同时靠近地面和后墙，AO 会在两处形成明显暗带。
+    // 墙角球体
     glBindVertexArray(sphereVAO);
-    geometryShader.setVec3("baseColor", glm::vec3(0.45f, 0.31f, 0.21f));
-    glm::mat4 cornerSphere = glm::translate(
-        glm::mat4(1.0f), glm::vec3(2.65f, -1.35f, -5.55f));
+    objectShader.setVec3("baseColor", glm::vec3(0.45f, 0.31f, 0.21f));
+    glm::mat4 cornerSphere = glm::translate(glm::mat4(1.0f), glm::vec3(2.65f, -1.35f, -5.55f));
     cornerSphere = glm::scale(cornerSphere, glm::vec3(0.72f));
-    geometryShader.setMat4("model", cornerSphere);
-    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(sphereIndices.size()),
-                   GL_UNSIGNED_INT, nullptr);
+    objectShader.setMat4("model", cornerSphere);
+    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(sphereIndices.size()),GL_UNSIGNED_INT, nullptr);
 
     // 2. SSAO Pass：在观察空间中比较邻域深度，得到原始遮蔽纹理。
     glDisable(GL_DEPTH_TEST);
@@ -498,7 +477,7 @@ int main() {
     // 3. Blur Pass：平滑原始 SSAO 的随机颗粒。
     glBindFramebuffer(GL_FRAMEBUFFER, ssaoBlurFBO);
     glClear(GL_COLOR_BUFFER_BIT);
-    blurShader.use();
+    ssaoBlurShader.use();
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, ssaoColorBuffer);
     glDrawArrays(GL_TRIANGLES, 0, 6);
@@ -534,10 +513,17 @@ int main() {
     glDrawArrays(GL_TRIANGLES, 0, 6);
 
     // 5. 复制深度后再画光源，光源标记才能被场景物体正确遮挡。
+    //为什么要拷贝Buffer?
+    //上面的状态是绘制全屏 quad，glClear之后，屏幕 FBO 的深度缓冲此刻是空的，glEnable(GL_DEPTH_TEST)也没开过
+    //如果直接用这个空深度缓冲开深度测试，小球永远找不到"比自己更近的墙"——于是会透过墙壁显示出来，穿帮。
+    //解决办法就是把gBuffer的正确景深度，搬到屏幕 FBO 的深度缓冲
+    //一句话总结：光照 pass 用后处理 quad 上屏时丢掉了场景深度，而光源小球是真正的 3D 物体，需要深度测试来决定该不该被墙挡住
+    //所以把几何 pass 留在 gBuffer 里的深度 blit 到屏幕，补齐这个缺口
     glBindFramebuffer(GL_READ_FRAMEBUFFER, gBuffer);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glBlitFramebuffer(0, 0, W, H, 0, 0, W, H, GL_DEPTH_BUFFER_BIT,
                       GL_NEAREST);
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glEnable(GL_DEPTH_TEST);
     // 用发光小球标记每个点光源的位置
