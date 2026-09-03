@@ -8321,15 +8321,15 @@ $$
 #version 330 core
 out vec4 FragColor;
 
-in vec3 WorldPos;
-in vec3 Normal;
-in vec3 LocalPos;
+in vec3 WorldPos; //世界空间位置
+in vec3 Normal;   //世界空间法线
+in vec3 LocalPos; //局部空间位置（程序化纹理）
 
 uniform vec3 camPos;
-uniform vec3 albedo;
-uniform float metallic;
-uniform float roughness;
-uniform float ao;
+uniform vec3 albedo; //基色
+uniform float metallic; //金属度
+uniform float roughness;//粗糙度
+uniform float ao;	//环境光z
 uniform int materialType;
 uniform vec3 lightPositions[4];
 uniform vec3 lightColors[4];
@@ -8399,9 +8399,15 @@ vec3 fresnelSchlick(float cosTheta, vec3 f0)
 
 void main()
 {
+    //materialAlbedo是通过数学公式生成纹理，只用作demo使用，实际使用纹理贴图
     vec3 baseColor = materialAlbedo();
+    
+    //法线
     vec3 N = normalize(Normal);
+    
+    //
     vec3 V = normalize(camPos - WorldPos);
+    
     vec3 f0 = mix(vec3(0.04), baseColor, metallic);
     vec3 directLighting = vec3(0.0);
 
@@ -8514,3 +8520,101 @@ while (!glfwWindowShouldClose(window)) {
   }
 ```
 
+
+
+阶段一：核心数据结构与像素操作
+对应教材：《学习OpenCV 3》第 2-3 章；《OpenCV计算机视觉编程攻略》第 1-2 章。
+
+cv::Mat 矩阵核心机制
+
+理解矩阵头、数据区、引用计数与深浅拷贝（clone / copyTo）。
+掌握 ROI（感兴趣区域）、子矩阵切片与数据类型转换（convertTo）。
+
+像素级高性能访问
+
+指针扫描（Pointer-based，性能最优）。
+迭代器（Iterator，安全优雅）。
+at<> 方法（直观但稍慢，适合调试）。
+
+色彩空间与通道操作
+
+RGB 与 HSV、Lab、Grayscale 的转换场景（如利用 HSV 做颜色过滤）。
+split、merge 与通道混合。
+
+🔍 阶段二：图像几何与基础空间处理
+对应教材：《学习OpenCV 3》第 4-5 章；《OpenCV计算机视觉编程攻略》第 3 章。
+
+几何与仿射/透视变换
+
+图像缩放、平移、旋转（resize, warpAffine）。
+透视变换（getPerspectiveTransform, warpPerspective），常用于文档扫描、车牌矫正。
+
+基础绘制与交互
+
+在图像上绘制几何图形、添加文字，以及鼠标/滑动条回调函数的设计（实现简易 GUI 交互）。
+
+🎨 阶段三：滤波去噪、形态学与边缘提取
+对应教材：《学习OpenCV 3》第 5、16 章；《OpenCV计算机视觉编程攻略》第 5、6 章。
+
+空间域滤波
+
+线性滤波（均值、高斯）与非线性滤波（中值、双边滤波）。
+理解双边滤波的“保边去噪”原理。
+
+形态学图像处理
+
+腐蚀与膨胀的底层逻辑。
+开/闭运算、形态学梯度、顶帽与黑帽，解决断裂边缘、去除细小噪声。
+
+梯度与边缘检测
+
+一阶微分算子（Sobel, Scharr）与二阶微分。
+Canny 边缘检测的多级流水线原理（高低阈值、非极大值抑制）。
+
+📐 阶段四：高级形状分析与特征工程
+对应教材：《学习OpenCV 3》第 7、16 章；《OpenCV计算机视觉编程攻略》第 7、9 章。
+
+二值化与轮廓分析
+
+全局阈值、Otsu 自适应阈值。
+轮廓检索树（findContours 的 RETR_TREE、RETR_EXTERNAL 等模式）。
+形状描述：面积、周长、外接矩形、最小外接圆、Hu 矩。
+
+特征点与局部描述子（Feature Extraction）
+
+角点检测（Harris, Shi-Tomasi）。
+尺度不变特征：ORB（高效、适用于嵌入式与实时系统）与 SIFT。
+特征匹配：BFMatcher、FLANN，结合 RANSAC 剔除误匹配。
+
+🎥 阶段五：动态视觉与视频分析
+对应教材：《学习OpenCV 3》第 18 章；《OpenCV计算机视觉编程攻略》第 10 章。
+
+视频读写与背景建模
+
+cv::VideoCapture 与 cv::VideoWriter 的规范使用。
+背景减除技术（MOG2、KNN）在安防监控移动物体检测中的应用。
+
+光流法（Optical Flow）
+
+稀疏光流（Lucas-Kanade）用于特征点跟踪。
+稠密光流计算全局运动场。
+
+📐 阶段六：三维视觉与摄像机标定
+对应教材：《学习OpenCV 3》第 19-20 章；《OpenCV计算机视觉编程攻略》第 11 章。
+
+摄像机模型与标定
+
+内参矩阵、畸变系数（径向与切向畸变）。
+棋盘格标定板（findChessboardCorners, calibrateCamera）与图像去畸变。
+
+立体视觉与深度基础
+
+双目立体匹配基础、视差图（Disparity Map）计算。
+
+🚀 阶段七：实战与综合落地
+
+学习路线的终点，也是实际项目的起点。你可以根据兴趣选择一个方向深入落地：
+
+方向 A（传统工业/嵌入式视觉）：基于颜色与形态学的传送带产品分拣、二维码/条形码识别。
+方向 B（智能交通/车载视觉）：霍夫变换车道线检测、简易交通标志识别。
+方向 C（人机交互/追踪）：基于颜色特征或光流的简易手势/物体追踪器。
