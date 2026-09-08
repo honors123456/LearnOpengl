@@ -8234,7 +8234,7 @@ void main()
 
 
 
-## 第三十章.PRB光照（基于物理的渲染）
+## 第三十章.PBR光照（基于物理的渲染）
 
 在前面的学习中，我们无论是用冯氏光照（Phong）、Blinn-Phong 还是自己魔改的衰减系数，本质上都有一个巨大的痛点：**美术材质全靠“猜”和“调参数”**（比如强行调高高光指数、瞎编镜面反射率）。同一个金属箱子，在不同的场景里经常显得像塑料或者橡胶。
 
@@ -8329,7 +8329,7 @@ uniform vec3 camPos;
 uniform vec3 albedo; //基色
 uniform float metallic; //金属度
 uniform float roughness;//粗糙度
-uniform float ao;	//环境光z
+uniform float ao;	//环境光遮蔽
 uniform int materialType;
 uniform vec3 lightPositions[4];
 uniform vec3 lightColors[4];
@@ -8370,28 +8370,41 @@ vec3 materialAlbedo()
     return albedo;
 }
 
+// GGX/Trowbridge-Reitz 法线分布函数
+// 描述微平面法线朝向半程向量H的概率分布
+// 粗糙度越高，分布越分散，高光越模糊
 float distributionGGX(vec3 N, vec3 H, float value)
 {
-    float a = value * value;
+    float a = value * value;	//// α = roughness²，Disney提出的重映射
     float a2 = a * a;
     float nDotH = max(dot(N, H), 0.0);
     float denominator = nDotH * nDotH * (a2 - 1.0) + 1.0;
+    
+    // 防止除零，返回GGX分布值
     return a2 / max(PI * denominator * denominator, 0.0001);
 }
 
+// Schlick-GGX 几何遮蔽函数（单方向）
+// 模拟微平面自遮蔽效应，粗糙表面更明显
 float geometrySchlickGGX(float nDotV, float value)
 {
     float r = value + 1.0;
-    float k = (r * r) / 8.0;
+    float k = (r * r) / 8.0;  	// k = (roughness + 1)² / 8，直接光照的推荐值
     return nDotV / (nDotV * (1.0 - k) + k);
 }
 
+// Smith 几何遮蔽函数（组合视线和光线方向）
+// 分别计算视线方向和光线方向的遮蔽，然后相乘
 float geometrySmith(vec3 N, vec3 V, vec3 L, float value)
 {
     return geometrySchlickGGX(max(dot(N, V), 0.0), value) *
            geometrySchlickGGX(max(dot(N, L), 0.0), value);
 }
 
+
+// Fresnel-Schlick 菲涅尔方程近似
+// 描述视角相关的反射率：掠射角反射更强
+// f0：垂直入射时的基础反射率
 vec3 fresnelSchlick(float cosTheta, vec3 f0)
 {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
@@ -8405,38 +8418,63 @@ void main()
     //法线
     vec3 N = normalize(Normal);
     
-    //
+    //视线方向，指向相机
     vec3 V = normalize(camPos - WorldPos);
     
+    //三.金属度与非金属度的划分 (Metallic Workflow)
+    // 计算基础反射率f0
+    // 非金属：f0 = 0.04（4%，电介质典型值）
+    // 金属：f0 = albedo（金属颜色即反射色）
     vec3 f0 = mix(vec3(0.04), baseColor, metallic);
+    
     vec3 directLighting = vec3(0.0);
 
+    // 遍历4个点光源，累加直接光照
     for (int i = 0; i < 4; ++i) {
+        
+        //点光源到像素的方向向量
         vec3 lightVector = lightPositions[i] - WorldPos;
         float distanceToLight = length(lightVector);
         vec3 L = lightVector / distanceToLight;
+        
+        //半程向量H：视线和光线的中间方向，用于微平面BRDF
         vec3 H = normalize(V + L);
-        vec3 radiance = lightColors[i] /
-                        max(distanceToLight * distanceToLight, 0.01);
-
-        float ndf = distributionGGX(N, H, roughness);
-        float geometry = geometrySmith(N, V, L, roughness);
-        vec3 fresnel = fresnelSchlick(max(dot(H, V), 0.0), f0);
+        
+        //光线衰减因子
+        vec3 radiance = lightColors[i] /max(distanceToLight * distanceToLight, 0.01);
+        
+        // Cook-Torrance BRDF 三大项
+        float ndf = distributionGGX(N, H, roughness);	// 法线分布
+        float geometry = geometrySmith(N, V, L, roughness);	// 几何遮蔽
+        vec3 fresnel = fresnelSchlick(max(dot(H, V), 0.0), f0);	// 菲涅尔
+        
+        //一.微表面模型 (Microfacet Model)
+        // 镜面反射项：NDF * G * F / (4 * NdotV * NdotL)
         vec3 numerator = ndf * geometry * fresnel;
-        float denominator = 4.0 * max(dot(N, V), 0.0) *
-                            max(dot(N, L), 0.0) + 0.0001;
+        float denominator = 4.0 * max(dot(N, V), 0.0) *max(dot(N, L), 0.0) + 0.0001;
         vec3 specular = numerator / denominator;
 
-        vec3 kS = fresnel;
-        vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
-        float nDotL = max(dot(N, L), 0.0);
+        //二.能量守恒 (Energy Conservation)
+        // 能量守恒：入射能量 = 反射能量 + 折射能量
+        vec3 kS = fresnel;						// 镜面反射比例（反射）
+        vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);	// 漫反射比例（折射）
+        float nDotL = max(dot(N, L), 0.0);		// Lambert余弦项
+        
+        // 累加：漫反射 + 镜面反射
+        // kD * albedo / PI：Lambertian漫反射BRDF
         directLighting += (kD * baseColor / PI + specular) * radiance * nDotL;
     }
 
-    // 本章暂未引入 IBL，因此用很小的环境项避免未受光区域完全变黑。
+    // 环境光项：本章暂未引入IBL（基于图像的光照）
+    // 用很小的环境项避免未受光区域完全变黑
     vec3 color = vec3(0.035) * baseColor * ao + directLighting;
+    
+    // Reinhard色调映射：压缩高动态范围到[0,1]
     color = color / (color + vec3(1.0));
+    
+    // Gamma校正：从线性空间转换到sRGB空间
     color = pow(color, vec3(1.0 / 2.2));
+    
     FragColor = vec4(color, 1.0);
 }
 ```
@@ -8522,99 +8560,409 @@ while (!glfwWindowShouldClose(window)) {
 
 
 
-阶段一：核心数据结构与像素操作
-对应教材：《学习OpenCV 3》第 2-3 章；《OpenCV计算机视觉编程攻略》第 1-2 章。
 
-cv::Mat 矩阵核心机制
 
-理解矩阵头、数据区、引用计数与深浅拷贝（clone / copyTo）。
-掌握 ROI（感兴趣区域）、子矩阵切片与数据类型转换（convertTo）。
 
-像素级高性能访问
 
-指针扫描（Pointer-based，性能最优）。
-迭代器（Iterator，安全优雅）。
-at<> 方法（直观但稍慢，适合调试）。
+## 第三十一章.IBL（Image-Based Lighting，基于图像的光照）
 
-色彩空间与通道操作
+#### 1.核心思想
 
-RGB 与 HSV、Lab、Grayscale 的转换场景（如利用 HSV 做颜色过滤）。
-split、merge 与通道混合。
+在上一节的 PBR 代码结尾，为了防止背光面完全变黑，我们写了这样一行硬编码的“保底代码”：
 
-🔍 阶段二：图像几何与基础空间处理
-对应教材：《学习OpenCV 3》第 4-5 章；《OpenCV计算机视觉编程攻略》第 3 章。
+```glsl
+vec3 color = vec3(0.035) * baseColor * ao + directLighting;
+```
 
-几何与仿射/透视变换
+**局限性**：现实世界中，哪怕你关掉所有的电灯泡（Direct Lighting），物体也绝对不会是一片漆黑。因为光线会在空气、地面、墙壁之间无数次反射，充满整个空间的每一个角落（环境光）。
 
-图像缩放、平移、旋转（resize, warpAffine）。
-透视变换（getPerspectiveTransform, warpPerspective），常用于文档扫描、车牌矫正。
+**IBL 的思想**：把周围的整个环境（例如一张 $360^\circ$ 的天空盒全景图）看作一个**包裹在场景外面的无穷大面光源**。物体表面上的每一个点，都在接收来自半球空间所有方向的入射光。
 
-基础绘制与交互
+但在实时渲染中，如果对每个像素都发射成千上万条光线去和全景图做半球积分（Monte Carlo Integration），帧率会直接暴跌到个位数。因此，IBL 的核心目标是通过**数学拆解与离线预计算**，把复杂的实时积分变成极其廉价的贴图采样。
 
-在图像上绘制几何图形、添加文字，以及鼠标/滑动条回调函数的设计（实现简易 GUI 交互）。
+整套 IBL 体系被 Epic Games 的 Split-Sum（分割求和）近似法拆解为了两大部分、三个资产：
 
-🎨 阶段三：滤波去噪、形态学与边缘提取
-对应教材：《学习OpenCV 3》第 5、16 章；《OpenCV计算机视觉编程攻略》第 5、6 章。
 
-空间域滤波
 
-线性滤波（均值、高斯）与非线性滤波（中值、双边滤波）。
-理解双边滤波的“保边去噪”原理。
+​																┌──► 漫反射项 (Diffuse)  ──► 1. 辐照度贴图 (Irradiance Map)
+【环境光照 IBL 体系】 ─────────┤
+​                               								│                         							┌──► 2. 预过滤环境贴图 (Prefiltered Env Map)
+​                               								└──► 镜面反射项 (Specular) ─┤
+​                                                         															└──► 3. 2D BRDF 查找表 (BRDF LUT)
 
-形态学图像处理
 
-腐蚀与膨胀的底层逻辑。
-开/闭运算、形态学梯度、顶帽与黑帽，解决断裂边缘、去除细小噪声。
 
-梯度与边缘检测
+我们在网上下载的高动态范围（HDR）环境天空盒，通常是一张长方形的 2D 平面图片（像世界地图一样展开的平铺图），但显卡（GPU）在做 3D 光照计算时，最喜欢、最高效使用的是一种叫做立方体贴图（Cubemap）的 3D 纹理格式。我们需要把这张 2D 平面图“包裹”并转换成立方体贴图。
 
-一阶微分算子（Sobel, Scharr）与二阶微分。
-Canny 边缘检测的多级流水线原理（高低阈值、非极大值抑制）。
 
-📐 阶段四：高级形状分析与特征工程
-对应教材：《学习OpenCV 3》第 7、16 章；《OpenCV计算机视觉编程攻略》第 7、9 章。
 
-二值化与轮廓分析
+#### 2.HDR 全景图与等距柱状投影转换
 
-全局阈值、Otsu 自适应阈值。
-轮廓检索树（findContours 的 RETR_TREE、RETR_EXTERNAL 等模式）。
-形状描述：面积、周长、外接矩形、最小外接圆、Hu 矩。
+##### 1. 为什么要用 HDR（高动态范围）格式？
 
-特征点与局部描述子（Feature Extraction）
+- 普通的 8-bit 图像（PNG/JPG）亮度被锁死在 $[0.0, 1.0]$（即 RGB 最大 $(255,255,255)$）。
+- 现实中太阳的亮度是阴影处天空亮度的成百上千倍。如果没有 `.hdr` 或 `.exr` 这种**浮点格式**记录真实的辐射率（Radiance），金属的高光反射就会失去耀眼的质感和动态对比。
 
-角点检测（Harris, Shi-Tomasi）。
-尺度不变特征：ORB（高效、适用于嵌入式与实时系统）与 SIFT。
-特征匹配：BFMatcher、FLANN，结合 RANSAC 剔除误匹配。
+##### 2. 痛点：为什么不能直接拿 2D 全景图当天空盒？
 
-🎥 阶段五：动态视觉与视频分析
-对应教材：《学习OpenCV 3》第 18 章；《OpenCV计算机视觉编程攻略》第 10 章。
+网络上下载的 HDR 贴图通常是一张 **2:1 的矩形全景图（Equirectangular Map）**。它是把三维球面经纬度直接展开成平面。
 
-视频读写与背景建模
+- **致命缺陷**：极点处（天顶和脚底）拉伸严重；在着色器里无法用 3D 方向向量进行高效、无缝的硬件三线性/各向异性过滤采样。
+- **解决方案**：在程序启动时，通过一个全景转换着色器，把 2D 矩形图“投影”并离线烘焙到一个 **Cubemap（立方体贴图）** 的 6 个面上。
 
-cv::VideoCapture 与 cv::VideoWriter 的规范使用。
-背景减除技术（MOG2、KNN）在安防监控移动物体检测中的应用。
 
-光流法（Optical Flow）
 
-稀疏光流（Lucas-Kanade）用于特征点跟踪。
-稠密光流计算全局运动场。
+#### 3.核心数学：从 3D 方向向量到 2D UV 坐标
 
-📐 阶段六：三维视觉与摄像机标定
-对应教材：《学习OpenCV 3》第 19-20 章；《OpenCV计算机视觉编程攻略》第 11 章。
+在转换着色器中，我们需要解决一个几何映射问题：**当我们在渲染立方体的某一个像素时，如何根据它的 3D 局部坐标（当作视线方向 $v$），去 2D 矩形全景图里找到对应的颜色？**
 
-摄像机模型与标定
+给定一个归一化的 3D 方向向量 $v = (x, y, z)$：
 
-内参矩阵、畸变系数（径向与切向畸变）。
-棋盘格标定板（findChessboardCorners, calibrateCamera）与图像去畸变。
+1. **利用球面坐标公式转换**：
 
-立体视觉与深度基础
+   - 经度（Azimuth $\phi$）: $\phi = \text{atan2}(v.z, v.x)$ （范围 $[-\pi, \pi]$）
+   - 纬度（Polar $\theta$）: $\theta = \arcsin(v.y)$ （范围 $[-\frac{\pi}{2}, \frac{\pi}{2}]$）
 
-双目立体匹配基础、视差图（Disparity Map）计算。
+2. **归一化映射到 $[0, 1]$ 的 UV 空间**：
 
-🚀 阶段七：实战与综合落地
+   $$u = \frac{\phi}{2\pi} + 0.5$$
 
-学习路线的终点，也是实际项目的起点。你可以根据兴趣选择一个方向深入落地：
+   $$v = \frac{\theta}{\pi} + 0.5$$
 
-方向 A（传统工业/嵌入式视觉）：基于颜色与形态学的传送带产品分拣、二维码/条形码识别。
-方向 B（智能交通/车载视觉）：霍夫变换车道线检测、简易交通标志识别。
-方向 C（人机交互/追踪）：基于颜色特征或光流的简易手势/物体追踪器。
+
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+in vec3 WorldPos; // 顶点着色器传过来的单位立方体 3D 局部坐标
+
+uniform sampler2D equirectangularMap;
+
+// 常量优化：1.0 / (2 * PI) 和 1.0 / PI
+const vec2 invAtan = vec2(0.1591, 0.3183);
+
+vec2 SampleSphericalMap(vec3 v)
+{
+    // 1. 运用 atan2 和 asin 求解球面经纬度，并乘以逆因子归一化到 [0, 1]
+    vec2 uv = vec2(atan(v.z, v.x), asin(v.y));
+    uv *= invAtan;
+    uv += 0.5; // 把 [-0.5, 0.5] 平移到 [0, 1]
+    return uv;
+}
+
+void main()
+{
+    // 归一化 3D 向量，保证它是纯方向
+    vec2 uv = SampleSphericalMap(normalize(WorldPos));
+    vec3 color = texture(equirectangularMap, uv).rgb;
+    
+    FragColor = vec4(color, 1.0);
+}
+```
+
+
+
+#### 4.C++ 侧离线烘焙管线实现
+
+在 C++ 端，我们不需要每帧都做这个复杂的投影转换，只需在程序初始化时执行一次“离渲染（Offline Rendering）”。
+
+其核心思路是：**创建一个 FBO，把目标 Cubemap 的 6 个面轮流挂载到 FBO 上，然后用一个 $90^\circ$ 视角的摄像机朝 6 个方向各拍一张照。**
+
+```c++
+// 1. 创建捕捉用的 FBO 和 RBO (用于深度缓存)
+unsigned int captureFBO, captureRBO;
+glGenFramebuffers(1, &captureFBO);
+glGenRenderbuffers(1, &captureRBO);
+
+glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+glBindRenderbuffer(GL_RENDERBUFFER, captureRBO);
+glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 512, 512);
+glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, captureRBO);
+
+// 2. 创建目标浮点 Cubemap 纹理
+unsigned int envCubemap;
+glGenTextures(1, &envCubemap);
+glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap);
+for (unsigned int i = 0; i < 6; ++i) {
+    // 每一个面指定为 512x512 的浮点格式 GL_RGB16F，保证高动态范围
+    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB16F, 
+                 512, 512, 0, GL_RGB, GL_FLOAT, nullptr);
+}
+// 设置 Cubemap 的环绕与过滤方式（防止接缝处出现黑线）
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+// 3. 定义 6 个方向的 LookAt 观察矩阵 (分别看向立方体的 +X, -X, +Y, -Y, +Z, -Z)
+glm::mat4 captureViews[] = {
+    glm::lookAt(glm::vec3(0.0f), glm::vec3( 1.0f,  0.0f,  0.0f), glm::vec3(0.0f, -1.0f,  0.0f)),
+    glm::lookAt(glm::vec3(0.0f), glm::vec3(-1.0f,  0.0f,  0.0f), glm::vec3(0.0f, -1.0f,  0.0f)),
+    glm::lookAt(glm::vec3(0.0f), glm::vec3( 0.0f,  1.0f,  0.0f), glm::vec3(0.0f,  0.0f,  1.0f)),
+    glm::lookAt(glm::vec3(0.0f), glm::vec3( 0.0f, -1.0f,  0.0f), glm::vec3(0.0f,  0.0f, -1.0f)),
+    glm::lookAt(glm::vec3(0.0f), glm::vec3( 0.0f,  0.0f,  1.0f), glm::vec3(0.0f, -1.0f,  0.0f)),
+    glm::lookAt(glm::vec3(0.0f), glm::vec3( 0.0f,  0.0f, -1.0f), glm::vec3(0.0f, -1.0f,  0.0f))
+};
+glm::mat4 captureProjection = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 10.0f);
+
+// 4. 执行离线渲染：把 2D HDR 投影到 Cubemap 的 6 个面上
+equirectangularShader.use();
+equirectangularShader.setInt("equirectangularMap", 0);
+equirectangularShader.setMat4("projection", captureProjection);
+glActiveTexture(GL_TEXTURE0);
+glBindTexture(GL_TEXTURE_2D, hdrTexture); // 加载进来的原始 2D HDR 贴图
+
+glViewport(0, 0, 512, 512); // 设置 512x512 的离屏视口
+glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+
+for (unsigned int i = 0; i < 6; ++i) {
+    equirectangularShader.setMat4("view", captureViews[i]);
+    
+    // 关键：将 Cubemap 的第 i 个面挂载到 FBO 的颜色附件上
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 
+                           GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, envCubemap, 0);
+                           
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    renderCube(); // 渲染一个内部朝向的单位立方体
+}
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
+```
+
+
+
+以上
+
+**背面全黑（痛点）** $\rightarrow$ **现实中环境处处有光（环境光定义）** $\rightarrow$ **把天空盒看作无穷大面光源（IBL 思想）** $\rightarrow$ **实时积分计算量爆炸（引入离线预计算与近似求解）** $\rightarrow$ **用 HDR 全景图提供高动态范围光照** $\rightarrow$ **通过离线投影转换成 6 个面的 Cubemap 贴到环境盒子上（工程落地第一步）**
+
+这个过程只是做了环境盒子得贴图，并没有计算光照pbr.
+
+
+
+#### 5.漫反射端：辐照度贴图（Diffuse Irradiance Map）
+
+##### 1.假设现在场景里有一个粗糙的木球或石球。
+
+根据 PBR 的漫反射理论，物体表面某一个点 $P$（法线为 $N$）的漫反射光照，是由它上方整个半球空间（Hemisphere）的所有入射光线**积分**决定的：
+
+$$L_o(p, \omega_o) = \frac{c}{\pi} \int_{\Omega} L_i(p, \omega_i) \cos(\theta) d\omega_i$$
+
+- **难点在哪里？**
+  - $L_i(p, \omega_i)$ 就是我们刚才做好的那个天空盒。
+  - $\cos(\theta)$ 是兰伯特余弦定律（法线与光线夹角越小，受光越强）。
+  - 如果在实时渲染的每个像素里，为了算这个积分去对天空盒采样成千上万次，GPU 会瞬间过载。
+- **解决方案（辐照度卷积 / Irradiance Convolution）**：
+  - 既然物体表面的漫反射是一个**低频平滑**的过程（粗糙表面会把来自四面八方的光线平均揉成一片），我们**不需要在每一帧、每个像素实时去算这个积分**。
+  - 我们可以**在程序启动时，离线把这个半球积分提前算好**！
+
+
+
+##### 2.所谓辐照度贴图，本质上也是一张 **Cubemap（立方体贴图）**。
+
+它的生成逻辑是这样的：
+
+1. 我们遍历这个 Cubemap 的每一个像素（即每一个方向的法线 $N$）。
+2. 以这个法线 $N$ 为中心，在它的上方构建一个**半球（Hemisphere）**。
+3. 用计算机图形学中最经典的方法——**蒙特卡洛积分（Monte Carlo Integration）**，在这个半球里随机打出成百上千条采样射线，去采样天空盒的颜色，乘以 $\cos(\theta)$，然后求平均值。
+4. 把这个平均出来的“最终环境光颜色”，存入辐照度贴图对应的像素中。
+
+经过这样一次“卷积（Convolution）”，原本细节拉满、闪烁的天空盒，变成了一张**极其模糊、色彩被平均揉匀的低分辨率光照贴图（Irradiance Map）**。
+
+
+
+##### 3.在离线烘焙阶段，我们用下面这个片段着色器来为 Cubemap 的每一个面计算辐照度：
+
+```glsl
+#version 330 core
+out vec4 FragColor;
+in vec3 WorldPos; // 当前像素对应的 3D 法线方向 (作为半球的中心法线 N)
+
+uniform samplerCube environmentMap; // 上一步做好的原始天空盒 Cubemap
+
+const float PI = 3.14159265359;
+
+void main()
+{
+    // 法线 N 就是当前片段在世界空间下的方向向量
+    vec3 normal = normalize(WorldPos);
+
+    vec3 irradiance = vec3(0.0);
+
+    // --- 核心：通过切线空间采样进行半球黎曼和/蒙特卡洛积分 ---
+    vec3 up = vec3(0.0, 1.0, 0.0);
+    vec3 right = normalize(cross(up, normal));
+    up = normalize(cross(normal, right));
+
+    float sampleDelta = 0.025; // 步长：控制采样密度
+    float nrSamples = 0.0;     // 记录总采样次数
+    
+    for(float phi = 0.0; phi < 2.0 * PI; phi += sampleDelta)
+    {
+        for(float theta = 0.0; theta < 0.5 * PI; theta += sampleDelta)
+        {
+            // 1. 将球面坐标(phi, theta)转换到切线空间
+            vec3 tangentSample = vec3(sin(theta) * cos(phi),  sin(theta) * sin(phi), cos(theta));
+            
+            // 2. 将切线空间向量变换到世界空间（对齐到法线 N）
+            vec3 sampleDir = tangentSample.x * right + tangentSample.y * up + tangentSample.z * normal; 
+
+            // 3. 采样天空盒，并乘上 cos(theta) 和 sin(theta) 权重
+            irradiance += texture(environmentMap, sampleDir).rgb * cos(theta) * sin(theta);
+            nrSamples++;
+        }
+    }
+    
+    // 求平均值并乘以 PI 归一化
+    irradiance = PI * irradiance * (1.0 / float(nrSamples));
+    
+    FragColor = vec4(irradiance, 1.0);
+}
+```
+
+
+
+##### 4.c++侧的离线预计算
+
+和上一步把 2D 全景图转 Cubemap 的代码极其相似。我们在程序初始化时，把 FBO 的目标换成一张全新的、尺寸较小（比如 $32 \times 32$ 或 $64 \times 64$，因为漫反射是低频的，不需要太大分辨率）的 Cubemap：
+
+```c++
+unsigned int irradianceMap;
+glGenTextures(1, &irradianceMap);
+glBindTexture(GL_TEXTURE_CUBE_MAP, irradianceMap);
+for (unsigned int i = 0; i < 6; ++i) {
+    // 漫反射不需要高分辨率，32x32 足够，甚至更省显存
+    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB16F, 
+                 32, 32, 0, GL_RGB, GL_FLOAT, nullptr);
+}
+// 设置环绕与线性过滤... (同上一步)
+
+// 绑定 FBO，用 irradianceShader 循环渲染 6 个面
+glBindFramebuffer(GL_FRAMEBUFFER, captureFBO);
+glViewport(0, 0, 32, 32); // 调整视口为 32x32
+irradianceShader.use();
+irradianceShader.setInt("environmentMap", 0);
+irradianceShader.setMat4("projection", captureProjection);
+
+glActiveTexture(GL_TEXTURE0);
+glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap); // 传入上一步做好的天空盒
+
+for (unsigned int i = 0; i < 6; ++i) {
+    irradianceShader.setMat4("view", captureViews[i]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 
+                           GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, irradianceMap, 0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    renderCube();
+}
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
+```
+
+
+
+#### 6.高光端：预过滤环境贴图
+
+IBL 体系中最后、也是数学上最精妙的一块拼图——**Specular IBL（镜面反射环境光）**。
+
+如果说前面的 Irradiance Map（漫反射辐照度贴图）解决的是“粗糙表面接收来自四面八方的平均光照”，那么 Specular IBL 解决的就是“不同光滑度、不同金属质感的物体，如何像镜子或磨砂金属一样，反射出清晰或模糊的周围环境”。
+
+这部分的复杂度会跃升一个台阶，因为镜面反射不仅取决于法线 $N$，还取决于**视线方向 $V$** 和**粗糙度（Roughness）**。
+
+
+
+##### 1.核心痛点：为什么镜面反射不能直接用一张贴图搞定？
+
+在漫反射中，积分只跟法线 $N$ 有关（因为漫反射光线是四面八方均匀散开的）。
+
+但在镜面反射中，反射光线是**有方向性的（由视线 $V$ 和粗糙度决定）**：
+
+- 如果表面很光滑（Roughness = 0.0），它需要采样天空盒极其精准、锐利的一个点。
+- 如果表面很粗糙（Roughness = 1.0），它需要把周围一大片区域的光线模糊地“揉”在一起。
+
+如果要把每一个粗糙度、每一个视线方向的所有组合都实时算出来，数据量是无穷大的。
+
+为了解决这个数学难题，Epic Games 在 2013 年提出了划时代的 **Split-Sum Approximation（分割求和近似法）**。他们把复杂的镜面反射积分**巧妙地拆成了两个独立的独立部分**：
+
+$$\text{Specular IBL} \approx \underbrace{\int L_i \cdot \text{BRDF} \, d\omega}_{\text{部分一：预过滤环境贴图}} \times \underbrace{\int \text{BRDF} \, d\omega}_{\text{部分二：2D BRDF 查找表}}$$
+
+这正好对应了工程落地的**两个核心资产**。
+
+
+
+##### 2.核心资产：预过滤环境贴图（Prefiltered Environment Map）
+
+##### 巧妙的工程解法：用 Mipmap 表达粗糙度
+
+- **问题**：粗糙度从 0.0 到 1.0 变化，难道我们要为每一种粗糙度烘焙一张完整的 Cubemap 吗？那显存直接爆了。
+- **妙招**：Epic 发现，**Cubemap 的 Mipmap 层级（Mip levels）天然就是不同清晰度的模糊版本！**
+  - **Mip 0**：最清晰（对应 Roughness = 0.0，像镜子）。
+  - **Mip 1, 2, 3...**：逐层模糊（对应 Roughness 逐渐增大，像磨砂金属）。
+- 在离线烘焙时，我们针对 Cubemap 的不同 Mipmap 层级，使用不同强度的蒙特卡洛重要性采样（Importance Sampling）来对原始天空盒进行模糊卷积。
+
+在运行时的 PBR 着色器中，当我们需要计算某个金属表面的高光反射时，直接根据其 `roughness` 去采样对应 Mipmap 层级的预过滤贴图：
+
+```glsl
+// 根据粗糙度决定去 Cubemap 的哪一层 Mipmap 采样
+vec3 prefilteredColor = textureLod(prefilteredMap, R, roughness * maxMipLevels).rgb;
+```
+
+这一行代码瞬间完成了原本需要海量积分才能算出来的动态镜面反射。
+
+
+
+##### 3.核心资产：2D BRDF 查找表（BRDF LUT 贴图）
+
+分割求和的第二部分，处理的是菲涅尔项（Fresnel）和几何项（Geometry）的积分。数学家们发现：这一部分的积分结果，**极其规律且只由两个变量决定**：
+
+1. **$N \cdot V$（法线与视线的夹角余弦值，对应纵轴 $V$）**
+2. **Roughness（表面粗糙度，对应横轴 $U$）**
+
+既然只跟这两个变量有关，我们就可以在程序启动时，离线计算一张 **$512 \times 512$ 的 2D 纹理（叫做 BRDF LUT）**：
+
+- **红通道（R）**：存储菲涅尔缩放系数（Scale）。
+- **绿通道（G）**：存储菲涅尔偏置系数（Bias）。
+
+在运行时的着色器中，只需要拿着 $N \cdot V$ 和 `roughness` 查一下这张 2D 图，就能完美还原复杂的菲涅尔高光能量。
+
+
+
+#### 7.最终的PBR
+
+当上面所有的预计算资产准备就绪后，我们最终的 PBR 片段着色器中关于环境光（Ambient）的完整代码长这样：
+
+```glsl
+// 1. 基础环境项 (AO 遮蔽)
+vec3 kS = fresnelSchlickRoughness(max(dot(N, V), 0.0), f0, roughness);
+vec3 kD = 1.0 - kS;
+kD *= (1.0 - metallic);
+
+// 2. 漫反射 IBL
+vec3 irradiance = texture(irradianceMap, N).rgb;
+vec3 diffuse = irradiance * baseColor;
+
+// 3. 镜面反射 IBL (预过滤高光 + 2D BRDF LUT 查表)
+vec3 R = reflect(-V, N);
+const float MAX_REFLECTION_LOD = 4.0;
+vec3 prefilteredColor = textureLod(prefilteredMap, R, roughness * MAX_REFLECTION_LOD).rgb;
+
+// 查 2D BRDF LUT 获得菲涅尔缩放与偏置
+vec2 envBRDF  = texture(brdfLUT, vec2(max(dot(N, V), 0.0), roughness)).rg;
+vec3 specular = prefilteredColor * (kS * envBRDF.x + envBRDF.y);
+
+// 4. 汇总环境光
+vec3 ambient = (kD * diffuse + specular) * ao;
+
+// 加上直接光，大功告成！
+vec3 color = ambient + directLighting;
+```
+
+
+
+#### 总结：至此，现代 PBR 渲染管线闭环
+
+回看我们这一整段旅程：
+
+1. **直接光照**：用 Cook-Torrance BRDF 解决了场景中几个点光源的照耀。
+2. **数据搬运**：把 2D HDR 全景图转成了高效的 `envCubemap`。
+3. **漫反射 IBL**：通过辐照度卷积生成 `irradianceMap`，解决了粗糙表面的环境漫反射。
+4. **镜面反射 IBL**：通过 Mipmap 预过滤贴图和 2D BRDF LUT，完美模拟了从镜面到磨砂金属的环境高光反射。
+
+到这里，你已经完全吃透了现代 3D 渲染引擎中最为核心的 **PBR + IBL 全套光照体系**。
