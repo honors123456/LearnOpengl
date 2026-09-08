@@ -1,3 +1,4 @@
+// 直接光源标记球的片元着色器，将 HDR 光源强度映射到显示范围。
 #version 330 core
 
 out vec4 FragColor;

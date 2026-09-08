@@ -1,3 +1,5 @@
+// Prefilter 环境贴图：每个 mip 对应一个 roughness。
+// 使用 Hammersley 低差异序列和 GGX importance sampling，生成模糊程度不同的反射环境。
 #version 330 core
 out vec4 FragColor;
 in vec3 localPos;

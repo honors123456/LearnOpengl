@@ -1,5 +1,7 @@
 #include "shader.h"
 
+// Shader 实现集中处理文件读取、GLSL 编译日志和 program 链接日志。
+
 #include <glm/gtc/type_ptr.hpp>
 
 #include <fstream>

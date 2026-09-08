@@ -1,3 +1,5 @@
+// PBR 物体顶点着色器。
+// 输出世界空间位置、世界空间法线和 UV，供直接光照、IBL 和材质贴图使用。
 #version 330 core
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNormal;

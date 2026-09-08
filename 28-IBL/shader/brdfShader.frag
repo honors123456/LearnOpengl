@@ -1,3 +1,5 @@
+// BRDF 积分 LUT。
+// 横坐标是 NdotV，纵坐标是 roughness，输出 Fresnel 缩放项和偏移项。
 #version 330 core
 out vec2 FragColor;
 in vec2 TexCoords;

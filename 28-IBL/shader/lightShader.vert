@@ -1,3 +1,4 @@
+// 直接光源标记球的顶点着色器，仅负责普通模型变换。
 #version 330 core
 layout (location = 0) in vec3 aPos;
 

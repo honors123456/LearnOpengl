@@ -1,3 +1,6 @@
+// LearnOpenGL 风格 IBL 示例：
+// 1. OpenCV 加载 HDR 全景图；2. 离屏转换 environment cubemap；
+// 3. 生成 irradiance、prefilter 和 BRDF LUT；4. 使用 PBR 材质渲染物体和 skybox。
 #include "../camera/Camera.h"
 #include "../shader/shader.h"
 
@@ -17,6 +20,7 @@
 
 GLuint loadHDRTexture(const char *path)
 {
+  // HDR 必须保留浮点精度，不能按普通 8-bit 图片读取。
   cv::Mat image = cv::imread(path, cv::IMREAD_ANYDEPTH | cv::IMREAD_COLOR);
   if (image.empty() || image.type() != CV_32FC3)
     throw std::runtime_error(std::string("Failed to load HDR image: ") + path);
@@ -36,6 +40,7 @@ GLuint loadHDRTexture(const char *path)
 
 GLuint loadTexture(const char *path, bool srgb)
 {
+  // PBR 材质的 albedo 使用 sRGB，normal/metallic/roughness/AO 使用线性格式。
   cv::Mat image = cv::imread(path, cv::IMREAD_UNCHANGED);
   if (image.empty())
     throw std::runtime_error(std::string("Failed to load texture: ") + path);
@@ -135,6 +140,7 @@ void processInput(GLFWwindow *window) {
 
 GLuint createCubemap(int size, bool mipmapped)
 {
+  // 这里只分配 cubemap 存储空间，实际内容由各个离屏 shader 写入。
   GLuint texture = 0;
   glGenTextures(1, &texture);
   glBindTexture(GL_TEXTURE_CUBE_MAP, texture);
@@ -153,6 +159,7 @@ GLuint createCubemap(int size, bool mipmapped)
 
 void renderCube()
 {
+  // 延迟创建并绘制立方体：环境转换和 skybox 共用这份几何体。
   static GLuint vao = 0, vbo = 0;
   if (vao == 0) {
     const float vertices[] = {
@@ -172,6 +179,7 @@ void renderCube()
 
 void renderQuad()
 {
+  // BRDF LUT 使用全屏 quad 计算每个 NdotV/roughness 像素。
   static GLuint vao = 0, vbo = 0;
   if (vao == 0) {
     const float vertices[] = {-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1};
@@ -183,6 +191,7 @@ void renderQuad()
 }
 
 int main() {
+  // 初始化窗口和 OpenGL 上下文。
   if (!glfwInit())
     return -1;
 

@@ -1,3 +1,5 @@
+// Skybox 片元着色器：从最终 environment cubemap 读取 HDR 环境颜色。
+// 输出前使用 Reinhard tone mapping 和 Gamma 校正。
 #version 330 core
 out vec4 FragColor;
 in vec3 localPos;

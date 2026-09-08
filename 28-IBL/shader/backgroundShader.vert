@@ -1,3 +1,4 @@
+// Skybox 顶点着色器：去掉相机平移，只保留旋转，让环境无限远。
 #version 330 core
 layout(location=0) in vec3 aPos;
 out vec3 localPos;
