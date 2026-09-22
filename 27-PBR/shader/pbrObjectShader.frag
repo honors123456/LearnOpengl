@@ -126,8 +126,7 @@ void main()
         vec3 H = normalize(V + L);
         
         // 距离平方衰减的辐射度
-        vec3 radiance = lightColors[i] /
-                        max(distanceToLight * distanceToLight, 0.01);
+        vec3 radiance = lightColors[i] / max(distanceToLight * distanceToLight, 0.01);
 
         // Cook-Torrance BRDF 三大项
         float ndf = distributionGGX(N, H, roughness);        // 法线分布
@@ -136,8 +135,7 @@ void main()
         
         // 镜面反射项：NDF * G * F / (4 * NdotV * NdotL)
         vec3 numerator = ndf * geometry * fresnel;
-        float denominator = 4.0 * max(dot(N, V), 0.0) *
-                            max(dot(N, L), 0.0) + 0.0001;  // 防止除零
+        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;  // 防止除零
         vec3 specular = numerator / denominator;
 
         // 能量守恒：入射能量 = 反射能量 + 折射能量

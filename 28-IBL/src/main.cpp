@@ -15,59 +15,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
-#include <stdexcept>
 #include <vector>
-
-GLuint loadHDRTexture(const char *path)
-{
-  // HDR 必须保留浮点精度，不能按普通 8-bit 图片读取。
-  cv::Mat image = cv::imread(path, cv::IMREAD_ANYDEPTH | cv::IMREAD_COLOR);
-  if (image.empty() || image.type() != CV_32FC3)
-    throw std::runtime_error(std::string("Failed to load HDR image: ") + path);
-  cv::cvtColor(image, image, cv::COLOR_BGR2RGB);
-  cv::flip(image, image, 0);
-  GLuint texture = 0;
-  glGenTextures(1, &texture);
-  glBindTexture(GL_TEXTURE_2D, texture);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, image.cols, image.rows, 0,
-               GL_RGB, GL_FLOAT, image.ptr<float>());
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  return texture;
-}
-
-GLuint loadTexture(const char *path, bool srgb)
-{
-  // PBR 材质的 albedo 使用 sRGB，normal/metallic/roughness/AO 使用线性格式。
-  cv::Mat image = cv::imread(path, cv::IMREAD_UNCHANGED);
-  if (image.empty())
-    throw std::runtime_error(std::string("Failed to load texture: ") + path);
-  cv::flip(image, image, 0);
-  GLenum format = GL_RED;
-  GLenum internalFormat = GL_R8;
-  if (image.channels() == 3) {
-    cv::cvtColor(image, image, cv::COLOR_BGR2RGB);
-    format = GL_RGB;
-    internalFormat = srgb ? GL_SRGB8 : GL_RGB8;
-  } else if (image.channels() == 4) {
-    cv::cvtColor(image, image, cv::COLOR_BGRA2RGBA);
-    format = GL_RGBA;
-    internalFormat = srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
-  }
-  GLuint texture = 0;
-  glGenTextures(1, &texture);
-  glBindTexture(GL_TEXTURE_2D, texture);
-  glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, image.cols, image.rows, 0,
-               format, GL_UNSIGNED_BYTE, image.data);
-  glGenerateMipmap(GL_TEXTURE_2D);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  return texture;
-}
 
 struct PBRMaterial {
   GLuint albedo;
@@ -138,58 +86,6 @@ void processInput(GLFWwindow *window) {
   }
 }
 
-GLuint createCubemap(int size, bool mipmapped)
-{
-  // 这里只分配 cubemap 存储空间，实际内容由各个离屏 shader 写入。
-  GLuint texture = 0;
-  glGenTextures(1, &texture);
-  glBindTexture(GL_TEXTURE_CUBE_MAP, texture);
-  for (int face = 0; face < 6; ++face) {
-    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGB16F,
-                 size, size, 0, GL_RGB, GL_FLOAT, nullptr);
-  }
-  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER,
-                  mipmapped ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-  return texture;
-}
-
-void renderCube()
-{
-  // 延迟创建并绘制立方体：环境转换和 skybox 共用这份几何体。
-  static GLuint vao = 0, vbo = 0;
-  if (vao == 0) {
-    const float vertices[] = {
-      -1,-1,-1, 1,-1,-1, 1,1,-1, 1,1,-1,-1,1,-1,-1,-1,-1,
-      -1,-1,1, 1,-1,1, 1,1,1, 1,1,1,-1,1,1,-1,-1,1,
-      -1,1,1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,1,1,
-      1,1,1,1,1,-1,1,-1,-1,1,-1,-1,1,-1,1,1,1,1,
-      -1,-1,-1,1,-1,-1,1,-1,1,1,-1,1,-1,-1,1,-1,-1,-1,
-      -1,1,-1,1,1,-1,1,1,1,1,1,1,-1,1,1,-1,1,-1};
-    glGenVertexArrays(1, &vao); glGenBuffers(1, &vbo);
-    glBindVertexArray(vao); glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0); glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),nullptr);
-  }
-  glBindVertexArray(vao); glDrawArrays(GL_TRIANGLES,0,36); glBindVertexArray(0);
-}
-
-void renderQuad()
-{
-  // BRDF LUT 使用全屏 quad 计算每个 NdotV/roughness 像素。
-  static GLuint vao = 0, vbo = 0;
-  if (vao == 0) {
-    const float vertices[] = {-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1};
-    glGenVertexArrays(1,&vao); glGenBuffers(1,&vbo); glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER,vbo); glBufferData(GL_ARRAY_BUFFER,sizeof(vertices),vertices,GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0); glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,2*sizeof(float),nullptr);
-  }
-  glBindVertexArray(vao); glDrawArrays(GL_TRIANGLES,0,6); glBindVertexArray(0);
-}
-
 int main() {
   // 初始化窗口和 OpenGL 上下文。
   if (!glfwInit())
@@ -216,51 +112,202 @@ int main() {
   glViewport(0, 0, W, H);
   glEnable(GL_DEPTH_TEST);
 
+  // 环境捕获与 skybox 共用的立方体几何体。
+  const float cubeVertices[] = {
+      -1,-1,-1, 1,-1,-1, 1,1,-1, 1,1,-1,-1,1,-1,-1,-1,-1,
+      -1,-1,1, 1,-1,1, 1,1,1, 1,1,1,-1,1,1,-1,-1,1,
+      -1,1,1,-1,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,1,-1,1,1,
+      1,1,1,1,1,-1,1,-1,-1,1,-1,-1,1,-1,1,1,1,1,
+      -1,-1,-1,1,-1,-1,1,-1,1,1,-1,1,-1,-1,1,-1,-1,-1,
+      -1,1,-1,1,1,-1,1,1,1,1,1,1,-1,1,1,-1,1,-1};
+  GLuint cubeVAO = 0, cubeVBO = 0;
+  glGenVertexArrays(1, &cubeVAO);
+  glGenBuffers(1, &cubeVBO);
+  glBindVertexArray(cubeVAO);
+  glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
+
+  //离屏计算使用的全屏 quad。
+  const float quadVertices[] = {-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1};
+  GLuint quadVAO = 0, quadVBO = 0;
+  glGenVertexArrays(1, &quadVAO);
+  glGenBuffers(1, &quadVBO);
+  glBindVertexArray(quadVAO);
+  glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+
+  // pbrObjectShader：最终物体渲染。读取五张 PBR 材质图、四个点光源和三份 IBL 预计算数据。
   Shader pbrShader(SHADER_DIR "/pbrObjectShader.vert",
                    SHADER_DIR "/pbrObjectShader.frag");
+  // lightShader：把点光源位置绘制成可见的发光标记球，不参与物体 PBR 光照计算。
   Shader lightShader(SHADER_DIR "/lightShader.vert",
                      SHADER_DIR "/lightShader.frag");
   GLuint irradianceMap = 0;
   GLuint prefilterMap = 0;
-  GLuint hdrEnvironment = 0;
-  try {
-    hdrEnvironment = loadHDRTexture(SHADER_DIR "/../res/newport_loft.hdr");
-  } catch (const std::exception &error) {
-    std::cerr << error.what() << '\n';
+  // 读取 HDR 全景图。IMREAD_ANYDEPTH 保留 .hdr 的 float RGB 数据。
+  cv::Mat hdrImage = cv::imread(SHADER_DIR "/../res/newport_loft.hdr",
+                                cv::IMREAD_ANYDEPTH | cv::IMREAD_COLOR);
+  if (hdrImage.empty() || hdrImage.type() != CV_32FC3) {
+    std::cerr << "Failed to load HDR image.\n";
+    glfwTerminate();
+    return -1;
   }
-  if (hdrEnvironment == 0) { glfwTerminate(); return -1; }
+  // OpenCV 默认 BGR、左上原点；转换到 OpenGL 使用的 RGB、左下原点。
+  cv::cvtColor(hdrImage, hdrImage, cv::COLOR_BGR2RGB);
+  cv::flip(hdrImage, hdrImage, 0);
+  GLuint hdrEnvironment = 0;
+  glGenTextures(1, &hdrEnvironment);
+  glBindTexture(GL_TEXTURE_2D, hdrEnvironment);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, hdrImage.cols, hdrImage.rows,
+               0, GL_RGB, GL_FLOAT, hdrImage.ptr<float>());
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+  // captureShader.vert：离屏立方体捕获共用顶点着色器，把单位 cube 投影到六个 cubemap 面。
+  // equirectangularToCubemapShader.frag：输入 HDR 经纬度全景图，输出 environment cubemap。
   Shader equirectShader(SHADER_DIR "/captureShader.vert", SHADER_DIR "/equirectangularToCubemapShader.frag");
+  // irradianceShader.frag：对 environment cubemap 做半球余弦卷积，输出漫反射环境光。
   Shader irradianceShader(SHADER_DIR "/captureShader.vert", SHADER_DIR "/irradianceShader.frag");
+  // prefilterShader.frag：以 roughness 为条件执行 GGX importance sampling，写入镜面反射 mip 链。
   Shader prefilterShader(SHADER_DIR "/captureShader.vert", SHADER_DIR "/prefilterShader.frag");
+  // brdfShader.vert/.frag：在全屏 quad 上积分 BRDF，输出 NdotV × roughness 的二维查找表。
   Shader brdfShader(SHADER_DIR "/brdfShader.vert", SHADER_DIR "/brdfShader.frag");
+  // backgroundShader：采样 environment cubemap 并绘制最终 skybox。
   Shader backgroundShader(SHADER_DIR "/backgroundShader.vert", SHADER_DIR "/backgroundShader.frag");
 
+  // capture FBO：所有 cubemap 面和 BRDF LUT 都通过这个离屏 framebuffer 生成。
+  // RBO 只提供深度附件，尺寸会随各个预计算阶段调整。
   GLuint fbo = 0, rbo = 0;
-  glGenFramebuffers(1, &fbo); glGenRenderbuffers(1, &rbo);
-  glBindFramebuffer(GL_FRAMEBUFFER, fbo); glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+  glGenFramebuffers(1, &fbo);
+  glGenRenderbuffers(1, &rbo);
+  glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+  glBindRenderbuffer(GL_RENDERBUFFER, rbo);
   glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 512, 512);
   glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rbo);
+  // 每个 cubemap 面都是 90 度视角、1:1 宽高比。
   glm::mat4 captureProjection = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 10.0f);
+  // 分别朝向 +X、-X、+Y、-Y、+Z、-Z 的六个观察矩阵。
   std::array<glm::mat4, 6> captureViews = {
     glm::lookAt(glm::vec3(0),glm::vec3(1,0,0),glm::vec3(0,-1,0)), glm::lookAt(glm::vec3(0),glm::vec3(-1,0,0),glm::vec3(0,-1,0)),
     glm::lookAt(glm::vec3(0),glm::vec3(0,1,0),glm::vec3(0,0,1)), glm::lookAt(glm::vec3(0),glm::vec3(0,-1,0),glm::vec3(0,0,-1)),
     glm::lookAt(glm::vec3(0),glm::vec3(0,0,1),glm::vec3(0,-1,0)), glm::lookAt(glm::vec3(0),glm::vec3(0,0,-1),glm::vec3(0,-1,0))};
-  GLuint envCubemap = createCubemap(512, true);
-  glViewport(0,0,512,512); glBindFramebuffer(GL_FRAMEBUFFER,fbo);
-  equirectShader.use(); equirectShader.setInt("equirectangularMap",0); equirectShader.setMat4("projection",captureProjection);
-  glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,hdrEnvironment);
-  for (int i=0;i<6;++i) { equirectShader.setMat4("view",captureViews[i]); glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_CUBE_MAP_POSITIVE_X+i,envCubemap,0); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT); renderCube(); }
-  glBindTexture(GL_TEXTURE_CUBE_MAP,envCubemap); glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
-  glBindFramebuffer(GL_FRAMEBUFFER,0); glViewport(0,0,W,H);
-  GLuint brdfLUT=0; glGenTextures(1,&brdfLUT); glBindTexture(GL_TEXTURE_2D,brdfLUT); glTexImage2D(GL_TEXTURE_2D,0,GL_RG16F,512,512,0,GL_RG,GL_FLOAT,nullptr); glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR); glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR); glBindFramebuffer(GL_FRAMEBUFFER,fbo); glBindRenderbuffer(GL_RENDERBUFFER,rbo); glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,512,512); glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,brdfLUT,0); glViewport(0,0,512,512); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT); brdfShader.use(); renderQuad(); glBindFramebuffer(GL_FRAMEBUFFER,0); glViewport(0,0,W,H);
-  irradianceMap=createCubemap(32,false);
-  glBindRenderbuffer(GL_RENDERBUFFER,rbo); glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,32,32);
-  irradianceShader.use(); irradianceShader.setInt("environmentMap",0); irradianceShader.setMat4("projection",captureProjection); glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_CUBE_MAP,envCubemap); glBindFramebuffer(GL_FRAMEBUFFER,fbo); glViewport(0,0,32,32);
-  for(int i=0;i<6;++i){ irradianceShader.setMat4("view",captureViews[i]); glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_CUBE_MAP_POSITIVE_X+i,irradianceMap,0); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT); renderCube(); }
-  prefilterMap=createCubemap(128,true); glBindTexture(GL_TEXTURE_CUBE_MAP,prefilterMap); glGenerateMipmap(GL_TEXTURE_CUBE_MAP); prefilterShader.use(); prefilterShader.setInt("environmentMap",0); prefilterShader.setMat4("projection",captureProjection); glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_CUBE_MAP,envCubemap);
-  for(int mip=0;mip<5;++mip){ int size=128>>mip; glBindRenderbuffer(GL_RENDERBUFFER,rbo); glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,size,size); glViewport(0,0,size,size); prefilterShader.setFloat("roughness",float(mip)/4.0f); for(int i=0;i<6;++i){ prefilterShader.setMat4("view",captureViews[i]); glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_CUBE_MAP_POSITIVE_X+i,prefilterMap,mip); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT); renderCube(); }}
-  glBindFramebuffer(GL_FRAMEBUFFER,0); glViewport(0,0,W,H);
+  // 阶段 1：创建 512×512 HDR environment cubemap，接收全景图转换结果。
+  GLuint envCubemap = 0;
+  glGenTextures(1, &envCubemap);
+  glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap);
+  for (int face = 0; face < 6; ++face)
+    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGB16F, 512, 512, 0, GL_RGB, GL_FLOAT, nullptr);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+  glViewport(0,0,512,512);
+  glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+  equirectShader.use();
+  equirectShader.setInt("equirectangularMap",0);
+  equirectShader.setMat4("projection",captureProjection);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D,hdrEnvironment);
+  for (int i=0;i<6;++i) {
+    equirectShader.setMat4("view",captureViews[i]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_CUBE_MAP_POSITIVE_X+i,envCubemap,0);
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+    glBindVertexArray(cubeVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+  }
+  glBindTexture(GL_TEXTURE_CUBE_MAP,envCubemap);
+  glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+  glBindFramebuffer(GL_FRAMEBUFFER,0);
+  glViewport(0,0,W,H);
+
+  // 阶段 2：在全屏 quad 上计算 BRDF LUT，RG 存储 Fresnel 的 scale 与 bias。
+  GLuint brdfLUT=0;
+  glGenTextures(1,&brdfLUT);
+  glBindTexture(GL_TEXTURE_2D,brdfLUT);
+  glTexImage2D(GL_TEXTURE_2D,0,GL_RG16F,512,512,0,GL_RG,GL_FLOAT,nullptr);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+  glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+  glBindRenderbuffer(GL_RENDERBUFFER,rbo);
+  glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,512,512);
+  glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,brdfLUT,0);
+  glViewport(0,0,512,512);
+  glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+  brdfShader.use(); glBindVertexArray(quadVAO);
+  glDrawArrays(GL_TRIANGLES, 0, 6);
+  glBindFramebuffer(GL_FRAMEBUFFER,0);
+  glViewport(0,0,W,H);
+  // 阶段 3：32×32 irradiance cubemap，存储低频漫反射环境光。
+  irradianceMap = 0;
+  glGenTextures(1, &irradianceMap);
+  glBindTexture(GL_TEXTURE_CUBE_MAP, irradianceMap);
+  for (int face = 0; face < 6; ++face)
+    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGB16F, 32, 32, 0, GL_RGB, GL_FLOAT, nullptr);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+  glBindRenderbuffer(GL_RENDERBUFFER,rbo);
+  glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,32,32);
+  irradianceShader.use();
+  irradianceShader.setInt("environmentMap",0);
+  irradianceShader.setMat4("projection",captureProjection);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_CUBE_MAP,envCubemap);
+  glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+  glViewport(0,0,32,32);
+  for(int i=0;i<6;++i){
+    irradianceShader.setMat4("view",captureViews[i]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_CUBE_MAP_POSITIVE_X+i,irradianceMap,0);
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+    glBindVertexArray(cubeVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+  }
+
+  // 阶段 4：128×128 prefilter cubemap。
+  // 其各个 mip 保存不同 roughness 的镜面环境反射，用于 textureLod 采样。
+  prefilterMap = 0;
+  glGenTextures(1, &prefilterMap);
+  glBindTexture(GL_TEXTURE_CUBE_MAP, prefilterMap);
+  for (int face = 0; face < 6; ++face)
+    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGB16F, 128, 128, 0, GL_RGB, GL_FLOAT, nullptr);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+  glBindTexture(GL_TEXTURE_CUBE_MAP,prefilterMap);
+  glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+  prefilterShader.use();
+  prefilterShader.setInt("environmentMap",0);
+  prefilterShader.setMat4("projection",captureProjection);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_CUBE_MAP,envCubemap);
+  // mip 0 到 4 分别对应 roughness 0.0 到 1.0；每级都需要绘制六个 cubemap 面。
+  for(int mip=0;mip<5;++mip){
+      int size=128>>mip;
+      glBindRenderbuffer(GL_RENDERBUFFER,rbo);
+      glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,size,size);
+      glViewport(0,0,size,size);
+      prefilterShader.setFloat("roughness",float(mip)/4.0f);
+      for(int i=0;i<6;++i){
+        prefilterShader.setMat4("view",captureViews[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_CUBE_MAP_POSITIVE_X+i,prefilterMap,mip);
+        glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+        glBindVertexArray(cubeVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+      }
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER,0);
+  glViewport(0,0,W,H);
 
   // UV 球体：位置本身就是单位球法线，因此每个顶点存 position + normal。
   constexpr int segments = 64;
@@ -293,7 +340,8 @@ int main() {
     }
   }
 
-  //球体顶点数据，只有位置信息和法线
+  // 上传球体顶点数据：每顶点 8 个 float = position(3) + normal(3) + UV(2)。
+  // location 0/1/2 必须与 pbrObjectShader.vert 的输入布局一一对应。
   GLuint sphereVAO = 0, sphereVBO = 0, sphereEBO = 0;
   glGenVertexArrays(1, &sphereVAO);
   glGenBuffers(1, &sphereVBO);
@@ -310,19 +358,65 @@ int main() {
   glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float),(void *)(6 * sizeof(float)));
   glEnableVertexAttribArray(2);
 
-  auto loadMaterial = [](const std::string &name) {
-    const std::string root = std::string(SHADER_DIR) + "/../res/pbr/" + name + "/";
-    return PBRMaterial{
-        loadTexture((root + "albedo.png").c_str(), true),
-        loadTexture((root + "normal.png").c_str(), false),
-        loadTexture((root + "metallic.png").c_str(), false),
-        loadTexture((root + "roughness.png").c_str(), false),
-        loadTexture((root + "ao.png").c_str(), false)};
-  };
-  const std::array<PBRMaterial, 5> materials = {
-      loadMaterial("rusted_iron"), loadMaterial("gold"),
-      loadMaterial("grass"), loadMaterial("plastic"),
-      loadMaterial("wall")};
+  // 依次加载五套材质的 albedo、normal、metallic、roughness 和 AO 贴图。
+  // 这里保留五个明确的资源目录，便于对照教程和调试单个材质。
+  const std::string materialRoot = std::string(SHADER_DIR) + "/../res/pbr/";
+  const std::array<std::string, 5> materialNames =
+      {"rusted_iron", "gold", "grass", "plastic", "wall"};
+  const std::array<std::string, 5> textureNames =
+      {"albedo.png", "normal.png", "metallic.png", "roughness.png", "ao.png"};
+  std::array<PBRMaterial, 5> materials{};
+  for (std::size_t i = 0; i < materials.size(); ++i) {
+    const std::string root = materialRoot + materialNames[i] + "/";
+
+    // 每套材质依次加载五张贴图。albedo 按 sRGB 解码，其余数据贴图保持线性。
+    for (std::size_t textureIndex = 0; textureIndex < textureNames.size(); ++textureIndex) {
+      const std::string texturePath = root + textureNames[textureIndex];
+      cv::Mat image = cv::imread(texturePath, cv::IMREAD_UNCHANGED);
+      if (image.empty()) {
+        std::cerr << "Failed to load texture: " << texturePath << std::endl;
+        glfwTerminate();
+        return -1;
+      }
+
+      // OpenCV 图像原点位于左上角，OpenGL 纹理坐标原点位于左下角，因此上下翻转。
+      cv::flip(image, image, 0);
+      GLenum format = GL_RED;
+      GLenum internalFormat = GL_R8;
+      if (image.channels() == 3) {
+        cv::cvtColor(image, image, cv::COLOR_BGR2RGB);
+        format = GL_RGB;
+        internalFormat = textureIndex == 0 ? GL_SRGB8 : GL_RGB8;
+      } else if (image.channels() == 4) {
+        cv::cvtColor(image, image, cv::COLOR_BGRA2RGBA);
+        format = GL_RGBA;
+        internalFormat = textureIndex == 0 ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+      }
+
+      GLuint texture = 0;
+      glGenTextures(1, &texture);
+      glBindTexture(GL_TEXTURE_2D, texture);
+      glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, image.cols, image.rows, 0,
+                   format, GL_UNSIGNED_BYTE, image.data);
+      glGenerateMipmap(GL_TEXTURE_2D);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+      // 将本次生成的纹理对象写入对应的 PBR 材质通道。
+      if (textureIndex == 0)
+        materials[i].albedo = texture;
+      else if (textureIndex == 1)
+        materials[i].normal = texture;
+      else if (textureIndex == 2)
+        materials[i].metallic = texture;
+      else if (textureIndex == 3)
+        materials[i].roughness = texture;
+      else
+        materials[i].ao = texture;
+    }
+  }
 
   // 四个点光源位置：前两盏在场景上方左右两侧（主光），
   // 后两盏贴近底部左右两侧（近距暖色补光，主循环里会画标记小球）。
@@ -335,9 +429,11 @@ int main() {
       glm::vec3(300.0f), glm::vec3(300.0f),
       glm::vec3(300.0f), glm::vec3(300.0f)};
 
+  // 主渲染循环：先绘制 PBR 材质球和直接光源，再最后绘制深度为最远处的 skybox。
   while (!glfwWindowShouldClose(window)) {
     processInput(window);
 
+    // 将鼠标更新的球坐标相机参数转换为世界空间相机位置。
     float yaw = glm::radians(orbitYaw);
     float pitch = glm::radians(orbitPitch);
     glm::vec3 orbitOffset(
@@ -346,18 +442,21 @@ int main() {
         orbitDistance * std::cos(pitch) * std::sin(yaw));
     camera.Position = orbitOffset;
 
-    //观察矩阵和投影矩阵
+    // 观察矩阵把世界空间变换到相机空间；投影矩阵建立透视投影。
     glm::mat4 view = glm::lookAt(camera.Position, glm::vec3(0.0f),glm::vec3(0.0f, 1.0f, 0.0f));
     glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), static_cast<float>(W) / H, 0.1f, 100.0f);
 
+    // 清除上一帧颜色和深度。skybox 会在本帧最后覆盖未被物体写入的像素。
     glClearColor(0.56f, 0.43f, 0.31f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    // PBR 绘制准备：先写入相机、IBL 纹理、材质纹理和解析点光源 uniform。
     pbrShader.use();
     pbrShader.setMat4("view", view);
     pbrShader.setMat4("projection", projection);
     pbrShader.setVec3("camPos", camera.Position);
     pbrShader.setBool("enableDirectLights", enableDirectLights);
+    // texture unit 0~2 是 IBL 预计算数据：漫反射 irradiance、镜面 prefilter、BRDF LUT。
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_CUBE_MAP, irradianceMap);
     pbrShader.setInt("irradianceMap", 0);
@@ -367,16 +466,20 @@ int main() {
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, brdfLUT);
     pbrShader.setInt("brdfLUT", 2);
+    // texture unit 3~7 是每个材质球自己的 PBR 贴图。
     pbrShader.setInt("albedoMap", 3);
     pbrShader.setInt("normalMap", 4);
     pbrShader.setInt("metallicMap", 5);
     pbrShader.setInt("roughnessMap", 6);
     pbrShader.setInt("aoMap", 7);
+    // 不论开关状态都上传灯光参数；shader 依据 enableDirectLights 决定是否累加直接光。
     for (int i = 0; i < 4; ++i) {
       pbrShader.setVec3("lightPositions[" + std::to_string(i) + "]", lightPositions[i]);
       pbrShader.setVec3("lightColors[" + std::to_string(i) + "]", lightColors[i]);
     }
 
+    // 依次绘制五种 textured PBR 材质球。
+    // 每次循环将该材质的五张贴图绑定到固定纹理单元，再设置球体的世界位置。
     glBindVertexArray(sphereVAO);
     constexpr float spacing = 2.5f;
     for (std::size_t i = 0; i < materials.size(); ++i) {
@@ -393,6 +496,7 @@ int main() {
                      GL_UNSIGNED_INT, nullptr);
     }
 
+    // 直接光开关开启时，额外绘制四个小球作为点光源位置与颜色的可视化标记。
     if (enableDirectLights) {
       lightShader.use();
       lightShader.setMat4("view", view);
@@ -408,6 +512,7 @@ int main() {
       }
     }
 
+    // skybox 必须最后绘制。LEQUAL + backgroundShader 的 xyww 写法保证其处在最远深度。
     glDepthFunc(GL_LEQUAL);
     backgroundShader.use();
     backgroundShader.setMat4("projection", projection);
@@ -415,9 +520,11 @@ int main() {
     backgroundShader.setInt("environmentMap", 0);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_CUBE_MAP, envCubemap);
-    renderCube();
+    glBindVertexArray(cubeVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
     glDepthFunc(GL_LESS);
 
+    // 提交本帧画面并继续处理键鼠事件。
     glfwSwapBuffers(window);
     glfwPollEvents();
   }
