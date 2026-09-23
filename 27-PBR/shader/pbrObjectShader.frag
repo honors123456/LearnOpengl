@@ -101,64 +101,65 @@ vec3 fresnelSchlick(float cosTheta, vec3 f0)
 
 void main()
 {
-    // 获取程序化材质颜色
-    vec3 baseColor = materialAlbedo();
-    
-    // 标准化向量
-    vec3 N = normalize(Normal);           // 法线
-    vec3 V = normalize(camPos - WorldPos); // 视线方向（指向相机）
-    
-    // 计算基础反射率f0
-    // 非金属：f0 = 0.04（4%，电介质典型值）
-    // 金属：f0 = albedo（金属颜色即反射色）
-    vec3 f0 = mix(vec3(0.04), baseColor, metallic);
-    
-    vec3 directLighting = vec3(0.0);
+    //之前的光照模型分为：环境光 + 漫反射 + 高光反射
+    //现在引入实际的物理光学原理就是：直接光照(PBR) + 间接光照(IBL)
+    vec3 directLightingColor = vec3(0.0);
+    vec3 indirectLightingColor = vec3(0.0);
 
-    // 遍历4个点光源，累加直接光照
+    //工具
+    vec3 N = normalize(Normal);     //法线
+    vec3 V = normalize(camPos - WorldPos);   //视线方向
+
+    vec3 baseColor = materialAlbedo();  //材质的基础颜色
+
     for (int i = 0; i < 4; ++i) {
-        // 计算光照方向L和距离衰减
-        vec3 lightVector = lightPositions[i] - WorldPos;
-        float distanceToLight = length(lightVector);
-        vec3 L = lightVector / distanceToLight;  // 标准化光照方向
-        
-        // 半程向量H：视线和光线的中间方向，用于微平面BRDF
-        vec3 H = normalize(V + L);
-        
-        // 距离平方衰减的辐射度
-        vec3 radiance = lightColors[i] / max(distanceToLight * distanceToLight, 0.01);
+        //---------------------------- 直接光照 = 漫反射（折射） + 高光反射 (反射) -----------------------------
+        //1.一束光从远处照过来，有距离衰减，有入射角度带来的衰减
+        vec3 lightVec = lightPositions[i] - WorldPos;
+        float distanceToLight = length(lightVec);
+        vec3 L = lightVec / distanceToLight;
 
-        // Cook-Torrance BRDF 三大项
+        vec3 radiance = lightColors[i] / max(distanceToLight * distanceToLight, 0.01);  //光线到达物体表面时的能量，光线能量与距离平方成反比
+        float nDotL = max(dot(N, L), 0.0);                                          //
+
+        //2.光线撞击到微平面，产生反射和折射
+        vec3 H = normalize(V + L);      //半程向量H：视线和光线的中间方向，用于微平面BRDF
+
+        vec3 f0 = mix(vec3(0.04), baseColor, metallic); //当前材质的反射率
+
+        // DFG 三大函数
         float ndf = distributionGGX(N, H, roughness);        // 法线分布
         float geometry = geometrySmith(N, V, L, roughness);  // 几何遮蔽
         vec3 fresnel = fresnelSchlick(max(dot(H, V), 0.0), f0); // 菲涅尔
-        
-        // 镜面反射项：NDF * G * F / (4 * NdotV * NdotL)
+
+        //高光反射(Cook-Torrance 渲染方程)-----反射
         vec3 numerator = ndf * geometry * fresnel;
         float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;  // 防止除零
         vec3 specular = numerator / denominator;
 
-        // 能量守恒：入射能量 = 反射能量 + 折射能量
-        vec3 kS = fresnel;                    // 镜面反射比例（反射）
+        //漫反射（能量守恒：入射能量 = 反射能量 + 折射能量）-----折射
+        vec3 kS = fresnel;                              // 镜面反射比例（反射）
         vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);  // 漫反射比例（折射）
-        // 金属没有漫反射，因为折射能量被立即吸收
-        
-        float nDotL = max(dot(N, L), 0.0);    //  Lambert余弦项
-        
-        // 累加：漫反射 + 镜面反射
-        // kD * albedo / PI：Lambertian漫反射BRDF
-        directLighting += (kD * baseColor / PI + specular) * radiance * nDotL;
+
+        vec3 diffuse = kD * baseColor / PI;
+
+        //直接光照
+        directLightingColor += (specular + diffuse)* radiance * nDotL;
     }
 
+    //---------------------------- 间接光照 = 漫反射（折射） + 高光反射 (反射) -----------------------------
     // 环境光项：本章暂未引入IBL（基于图像的光照）
     // 用很小的环境项避免未受光区域完全变黑
-    vec3 color = vec3(0.035) * baseColor * ao + directLighting;
-    
-    // Reinhard色调映射：压缩高动态范围到[0,1]
+    indirectLightingColor = vec3(0.035) * baseColor * ao;
+
+    //最终光照
+    vec3 color = indirectLightingColor + directLightingColor;
+
+    // Reinhard色调映射：把物理计算中数值无上限的高动态范围（HDR，[0, +infty)）能量，平滑压缩到显示器能够显示的低动态范围（LDR，[0.0, 1.0]）压缩高动态范围到[0,1]
     color = color / (color + vec3(1.0));
-    
-    // Gamma校正：从线性空间转换到sRGB空间
+
+    //Gamma校正：从线性空间转换到sRGB空间
     color = pow(color, vec3(1.0 / 2.2));
-    
+
     FragColor = vec4(color, 1.0);
 }
