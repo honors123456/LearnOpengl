@@ -4,6 +4,8 @@ cmake_minimum_required(VERSION 3.20)
 # 定义工程名称，并声明当前工程会使用 C 和 C++。
 project(Mini-Marmoset LANGUAGES C CXX)
 
+find_package(Qt5 5.12 REQUIRED COMPONENTS Quick Qml Gui OpenGL)
+
 # 指定 C++ 标准为 C++17，并要求编译器必须支持该标准。
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,18 +40,19 @@ endforeach()
 # 收集当前示例程序的源文件。
 set(SOURCES
     src/main.cpp
+    src/MarmosetItem.cpp
     shader/shader.cpp
     "${EXTERNAL_DIR}/src/glad.c"
-    camera/camera.cpp
 )
 
-# 生成可执行程序，目标名使用 project() 里定义的 Triangle。
-add_executable(${PROJECT_NAME} ${SOURCES})
+qt5_add_resources(QT_RESOURCES qml.qrc)
 
-# 添加头文件搜索路径，让代码可以 include glad、GLFW 等第三方头文件。
+# 生成可执行程序，目标名使用 project() 里定义的 Triangle。
+add_executable(${PROJECT_NAME} ${SOURCES} ${QT_RESOURCES})
+
+# 添加头文件搜索路径，让代码可以 include Qt、GLAD 和 GLM。
 target_include_directories(${PROJECT_NAME} PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/shader"
-    "${CMAKE_CURRENT_LIST_DIR}/camera"
     "${EXTERNAL_DIR}/include"
 )
 
@@ -57,20 +60,18 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     SHADER_DIR="${CMAKE_CURRENT_LIST_DIR}/shader"
 )
 
-# 添加库文件搜索路径，让链接器能找到 External/lib 里的 glfw3.lib。
-target_link_directories(${PROJECT_NAME} PRIVATE
-    "${EXTERNAL_DIR}/lib"
-)
-
-# 链接 GLFW 静态库和 Windows 系统 OpenGL 库。
+# 链接 Qt Quick/QML、Qt OpenGL 和 Windows OpenGL。
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    glfw3
+    Qt5::Quick
+    Qt5::Qml
+    Qt5::Gui
+    Qt5::OpenGL
     opengl32
 )
 
 # 根据编译器类型开启常用警告选项。
 if(MSVC)
-    target_compile_options(${PROJECT_NAME} PRIVATE /W4 /utf-8)
+    target_compile_options(${PROJECT_NAME} PRIVATE /W4 /source-charset:gb2312)
 else()
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
 endif()

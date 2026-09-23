@@ -12,18 +12,18 @@ Shader::Shader(const char* vertexPath, const char* fragmentPath)
     const std::string vertexCode = readShaderFile(vertexPath);
     const std::string fragmentCode = readShaderFile(fragmentPath);
 
-    // å…ˆåˆ†åˆ«ç¼–è¯‘é¡¶ç‚¹ç€è‰²å™¨å’Œç‰‡æ®µç€è‰²å™¨ã€‚
+    // ÏÈ·Ö±ğ±àÒë¶¥µã×ÅÉ«Æ÷ºÍÆ¬¶Î×ÅÉ«Æ÷¡£
     const unsigned int vertexShader = compileShader(GL_VERTEX_SHADER, vertexCode.c_str(), vertexPath);
     const unsigned int fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentCode.c_str(), fragmentPath);
 
-    // å†æŠŠä¸¤ä¸ªç€è‰²å™¨é“¾æ¥æˆä¸€ä¸ªå¯ä½¿ç”¨çš„ç€è‰²å™¨ç¨‹åºã€‚
+    // ÔÙ°ÑÁ½¸ö×ÅÉ«Æ÷Á´½Ó³ÉÒ»¸ö¿ÉÊ¹ÓÃµÄ×ÅÉ«Æ÷³ÌĞò¡£
     m_id = glCreateProgram();
     glAttachShader(m_id, vertexShader);
     glAttachShader(m_id, fragmentShader);
     glLinkProgram(m_id);
     checkProgramLink(m_id);
 
-    // é“¾æ¥å®Œæˆåï¼Œå•ç‹¬çš„ shader å¯¹è±¡å·²ç»ä¸éœ€è¦ä¿ç•™ã€‚
+    // Á´½ÓÍê³Éºó£¬µ¥¶ÀµÄ shader ¶ÔÏóÒÑ¾­²»ĞèÒª±£Áô¡£
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
 }
