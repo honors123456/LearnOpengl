@@ -273,37 +273,41 @@ private:
     };
 
     std::array<Material, 26> materials = {
-        Material{glm::vec3(0.52f, 0.055f, 0.025f), 0.0f, 0.23f, 1},
+        // 最左侧独立球体：右侧 QML 滑条覆盖它的 roughness、metallic 和 albedo。
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.00f, 0.05f,   1},
 
-        Material{glm::vec3(0.23f, 0.10f, 0.055f), 0.0f, 0.82f, 0},
-        Material{glm::vec3(0.52f, 0.055f, 0.025f), 0.0f, 0.23f, 1},
-        Material{glm::vec3(0.035f, 0.28f, 0.055f), 0.0f, 0.92f, 2},
-        Material{glm::vec3(1.0f, 0.71f, 0.22f), 1.0f, 0.12f, 3},
-        Material{glm::vec3(0.42f, 0.16f, 0.12f), 0.0f, 0.48f, 4},
+        // 5×5 材质测试矩阵：每行 metallic 递增，每列 roughness 递增。
+        // roughness: 0.05, 0.2875, 0.525, 0.7625, 1.0
+        // metallic:   0.0,  0.25,  0.5,    0.75,   1.0
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.00f, 0.05f,   1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.00f, 0.25f, 1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.00f, 0.5f,  1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.00f, 0.75f, 1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.00f, 1.0f,    1},
 
-        Material{glm::vec3(0.23f, 0.10f, 0.055f), 0.0f, 0.82f, 0},
-        Material{glm::vec3(0.52f, 0.055f, 0.025f), 0.0f, 0.23f, 1},
-        Material{glm::vec3(0.035f, 0.28f, 0.055f), 0.0f, 0.92f, 2},
-        Material{glm::vec3(1.0f, 0.71f, 0.22f), 1.0f, 0.12f, 3},
-        Material{glm::vec3(0.42f, 0.16f, 0.12f), 0.0f, 0.48f, 4},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.25f, 0.05f,   1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.25f, 0.25f, 1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.25f, 0.5f,  1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.25f, 0.75f, 1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.25f, 1.0f,    1},
 
-        Material{glm::vec3(0.23f, 0.10f, 0.055f), 0.0f, 0.82f, 0},
-        Material{glm::vec3(0.52f, 0.055f, 0.025f), 0.0f, 0.23f, 1},
-        Material{glm::vec3(0.035f, 0.28f, 0.055f), 0.0f, 0.92f, 2},
-        Material{glm::vec3(1.0f, 0.71f, 0.22f), 1.0f, 0.12f, 3},
-        Material{glm::vec3(0.42f, 0.16f, 0.12f), 0.0f, 0.48f, 4},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.50f, 0.05f,   1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.50f, 0.25f, 1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.50f, 0.5f,  1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.50f, 0.75f, 1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.50f, 1.0f,    1},
 
-        Material{glm::vec3(0.23f, 0.10f, 0.055f), 0.0f, 0.82f, 0},
-        Material{glm::vec3(0.52f, 0.055f, 0.025f), 0.0f, 0.23f, 1},
-        Material{glm::vec3(0.035f, 0.28f, 0.055f), 0.0f, 0.92f, 2},
-        Material{glm::vec3(1.0f, 0.71f, 0.22f), 1.0f, 0.12f, 3},
-        Material{glm::vec3(0.42f, 0.16f, 0.12f), 0.0f, 0.48f, 4},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.75f, 0.05f,   1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.75f, 0.25f, 1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.75f, 0.5f,  1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.75f, 0.75f, 1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 0.75f, 1.0f,    1},
 
-        Material{glm::vec3(0.23f, 0.10f, 0.055f), 0.0f, 0.82f, 0},
-        Material{glm::vec3(0.52f, 0.055f, 0.025f), 0.0f, 0.23f, 1},
-        Material{glm::vec3(0.035f, 0.28f, 0.055f), 0.0f, 0.92f, 2},
-        Material{glm::vec3(1.0f, 0.71f, 0.22f), 1.0f, 0.12f, 3},
-        Material{glm::vec3(0.42f, 0.16f, 0.12f), 0.0f, 0.48f, 4},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 1.00f, 0.05f,   1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 1.00f, 0.25f, 1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 1.00f, 0.5f,  1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 1.00f, 0.75f, 1},
+        Material{glm::vec3(0.5f, 0.5f, 0.5f), 1.00f, 1.0f,    1},
     };
 };
 
