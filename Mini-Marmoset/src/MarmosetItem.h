@@ -50,7 +50,7 @@ private:
     float orbitDistanceValue = 11.0f;
     float leftSphereRoughnessValue = 0.23f;
     float leftSphereMetallicValue = 0.0f;
-    float leftSphereAlbedoRValue = 0.52f;
-    float leftSphereAlbedoGValue = 0.055f;
-    float leftSphereAlbedoBValue = 0.025f;
+    float leftSphereAlbedoRValue = 0.5f;
+    float leftSphereAlbedoGValue = 0.5f;
+    float leftSphereAlbedoBValue = 0.5f;
 };

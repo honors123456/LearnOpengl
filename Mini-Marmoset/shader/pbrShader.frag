@@ -97,8 +97,7 @@ float geometrySchlickGGX(float nDotV, float value)
 // 分别计算视线方向和光线方向的遮蔽，然后相乘
 float geometrySmith(vec3 N, vec3 V, vec3 L, float value)
 {
-    return geometrySchlickGGX(max(dot(N, V), 0.0), value) *
-           geometrySchlickGGX(max(dot(N, L), 0.0), value);
+    return geometrySchlickGGX(max(dot(N, V), 0.0), value) * geometrySchlickGGX(max(dot(N, L), 0.0), value);
 }
 
 // Fresnel-Schlick 菲涅尔方程近似

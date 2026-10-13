@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <memory>
 #include <vector>
+#include <opencv2/opencv.hpp>
 
 namespace {
 
@@ -102,6 +103,7 @@ public:
             //创建着色器
             pbrShader = std::make_unique<Shader>(SHADER_DIR "/pbrShader.vert",SHADER_DIR "/pbrShader.frag");
             lightShader = std::make_unique<Shader>(SHADER_DIR "/lightShader.vert",SHADER_DIR "/lightShader.frag");
+            skyShader = std::make_unique<Shader>(SHADER_DIR "/skyShader.vert",SHADER_DIR "/skyShader.frag");
 
             //创建球体数据
             const std::vector<float> vertices = makeSphereVertices();
@@ -124,6 +126,37 @@ public:
             glEnableVertexAttribArray(1);
 
             glBindVertexArray(0);
+
+            //创建天空盒数据
+            skyboxVertexCount = static_cast<GLsizei>(sizeof(skyBoxVertices) / (3 * sizeof(float)));
+            glGenVertexArrays(1,&skyVAO);
+            glGenBuffers(1,&skyVBO);
+            glBindVertexArray(skyVAO);
+            glBindBuffer(GL_ARRAY_BUFFER,skyVBO);
+            glBufferData(GL_ARRAY_BUFFER,sizeof(skyBoxVertices),skyBoxVertices.data(),GL_STATIC_DRAW);
+            glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,6 * sizeof(float), nullptr);
+            glEnableVertexAttribArray(0);
+
+            glBindVertexArray(0);
+
+            //天空盒纹理
+            glGenTextures(1,&skyTexture);
+            glBindTexture(GL_TEXTURE_CUBE_MAP,skyTexture);
+            glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+
+            cv::Mat image = cv::imread("D:\\Code\\LearnOpengl\\old_hall_1k.hdr",cv::IMREAD_ANYDEPTH | cv::IMREAD_COLOR);
+            if (image.empty()) return;
+
+            cv::cvtColor(image, image, cv::COLOR_BGR2RGB);
+
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, image.cols, image.rows, 0, GL_RGB, GL_FLOAT, image.ptr<float>());
+
+            glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE); // 3D 纹理第 3 维坐标 R
+
             initialized = true;
         }
 
@@ -214,6 +247,7 @@ private:
     GLsizei sphereIndexCount = 0;
     std::unique_ptr<Shader> pbrShader;
     std::unique_ptr<Shader> lightShader;
+    std::unique_ptr<Shader> skyShader;
 
     float orbitYaw = 90.0f;
     float orbitPitch = 2.0f;
@@ -309,9 +343,58 @@ private:
         Material{glm::vec3(0.5f, 0.5f, 0.5f), 1.00f, 0.75f, 1},
         Material{glm::vec3(0.5f, 0.5f, 0.5f), 1.00f, 1.0f,    1},
     };
+
+    GLuint skyVAO = 0;
+    GLuint skyVBO = 0;
+    GLsizei skyboxVertexCount = 0;
+    GLuint skyTexture=0;
+    std::array<glm::vec3, 36> skyBoxVertices={
+        glm::vec3(-1.0f,  1.0f, -1.0f),
+        glm::vec3(-1.0f, -1.0f, -1.0f),
+        glm::vec3(1.0f, -1.0f, -1.0f),
+        glm::vec3(1.0f, -1.0f, -1.0f),
+        glm::vec3(1.0f,  1.0f, -1.0f),
+        glm::vec3(-1.0f,  1.0f, -1.0f),
+
+        glm::vec3(-1.0f, -1.0f,  1.0f),
+        glm::vec3(-1.0f, -1.0f, -1.0f),
+        glm::vec3(-1.0f,  1.0f, -1.0f),
+        glm::vec3(-1.0f,  1.0f, -1.0f),
+        glm::vec3(-1.0f,  1.0f,  1.0f),
+        glm::vec3(-1.0f, -1.0f,  1.0f),
+
+        glm::vec3(1.0f, -1.0f, -1.0f),
+        glm::vec3(1.0f, -1.0f,  1.0f),
+        glm::vec3(1.0f,  1.0f,  1.0f),
+        glm::vec3(1.0f,  1.0f,  1.0f),
+        glm::vec3(1.0f,  1.0f, -1.0f),
+        glm::vec3(1.0f, -1.0f, -1.0f),
+
+        glm::vec3(-1.0f, -1.0f,  1.0f),
+        glm::vec3(-1.0f,  1.0f,  1.0f),
+        glm::vec3(1.0f,  1.0f,  1.0f),
+        glm::vec3(1.0f,  1.0f,  1.0f),
+        glm::vec3(1.0f, -1.0f,  1.0f),
+        glm::vec3(-1.0f, -1.0f,  1.0f),
+
+        glm::vec3(-1.0f,  1.0f, -1.0f),
+        glm::vec3(1.0f,  1.0f, -1.0f),
+        glm::vec3(1.0f,  1.0f,  1.0f),
+        glm::vec3(1.0f,  1.0f,  1.0f),
+        glm::vec3(-1.0f,  1.0f,  1.0f),
+        glm::vec3(-1.0f,  1.0f, -1.0f),
+
+        glm::vec3(-1.0f, -1.0f, -1.0f),
+        glm::vec3(-1.0f, -1.0f,  1.0f),
+        glm::vec3(1.0f, -1.0f, -1.0f),
+        glm::vec3(1.0f, -1.0f, -1.0f),
+        glm::vec3(-1.0f, -1.0f,  1.0f),
+        glm::vec3(1.0f, -1.0f,  1.0f)
+    };
 };
 
 } // namespace
+
 float MarmosetItem::leftSphereRoughness() const
 {
     return leftSphereRoughnessValue;
