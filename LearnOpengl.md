@@ -9301,3 +9301,42 @@ LearnOpenGL 官方教程自带的压轴实战。用纯 C++ 和 OpenGL 从零写�
 1. **不要并发推进**：先选定一个项目（首选**项目一**打透 PBR/IBL，或选**项目二**吃透渲染管线）；
 2. **每一步以“代码敲完、在屏幕上肉眼看到该阶段特征”为完成标志**，不要提前写下一个阶段的代码；
 3. **遇到黑屏或状态异常，直接上 RenderDoc 抓帧查看 Buffer 绑定位**，严禁对着代码死猜。
+
+
+
+
+
+## Github练手项目
+
+### Level 1：底层原理脱敏 —— 纯手写 CPU 软光栅器
+
+- **仓库地址：** [`ssloy/tinyrenderer`](https://github.com/ssloy/tinyrenderer)
+- **核心内容：** 纯 C++，不依赖任何 OpenGL 或第三方图形库，甚至不用配环境。
+- **练手价值：** 跟着它的 Wiki 教程亲手写出 Bresenham 画线法、三角形重心坐标光栅化、Z-Buffer 深度缓冲与透视投影矩阵。把 LearnOpenGL 里的“黑盒管线”在 CPU 端彻底跑通一次。
+
+### Level 2：工具化与轻量封装 —— 带 GUI 的 glTF / OBJ 模型查看器
+
+- **仓库地址：** [`VictorGordan/opengl-tutorials`](https://github.com/VictorGordan/opengl-tutorials) 或 [`SaschaWillems/OpenGL`](https://www.google.com/search?q=https://github.com/SaschaWillems/OpenGL)
+- **核心内容：**
+  - `VictorGordan` 的代码从零手写封装了 `VAO/VBO/EBO`、`Shader`、`Texture`、`Camera`，并演示了如何接入 `stb_image`、`glad`、`GLFW` 和 `Dear ImGui`。
+  - `SaschaWillems/OpenGL` 提供了工业级规范的 CMake 结构和多示例组织方式，直接展示了如何加载 3D 模型和配置基础材质。
+- **练手价值：** 摆脱单文件脚本，学习多模块组织和用 Dear ImGui 做实时参数调优。
+
+### Level 3：特定高级管线实战 —— 现代延迟渲染与阴影
+
+- **仓库 1（延迟渲染 + SSAO）：** [`SaschaWillems/OpenGL`](https://www.google.com/search?q=https://github.com/SaschaWillems/OpenGL)
+  - 查看其子目录中的 `deferred` 和 `ssao` 示例（真正的现代 OpenGL 4.x 实现，包含 MRT、G-Buffer 打包和光照 Pass）。
+- **仓库 2（纯 OpenGL 级联阴影 CSM）：** [`ArthurBrussee/Cascaded-Shadow-Maps`](https://www.google.com/search?q=https://github.com/ArthurBrussee/Cascaded-Shadow-Maps)
+  - 纯 OpenGL 实现的大场景级联阴影，代码集中展示了视锥体切分（Frustum Splitting）、拟合正交投影包围盒以及阴影采样防抖逻辑。
+
+### Level 4：面向对象的微型渲染引擎 —— 架构抽象与批处理
+
+- **仓库地址：** [`TheCherno/Hazel`](https://github.com/TheCherno/Hazel)
+- **核心内容：** 现代 C++ 游戏引擎框架。
+- **练手价值：** 学习如何做 RHI（渲染硬件抽象）、层级结构（Layer Stack）、事件系统（Event System），以及如何用动态 VBO 做 Batch Renderer（批处理渲染），大幅减少 Draw Call。
+
+### Level 5：现代化 3D 渲染器与工具链
+
+- **仓库地址：** [`Yan-Wenke/Yan3D`](https://www.google.com/search?q=https://github.com/Yan-Wenke/Yan3D) 或 [`Overdrivr/Shadow`](https://www.google.com/search?q=https://github.com/Overdrivr/Shadow)
+- **核心内容：** 基于 Modern OpenGL（4.5+ DSA 特性）搭建的完整 3D 渲染工具，支持 PBR、IBL、动态阴影、glTF 模型加载以及完整的编辑器视口界面。
+- **练手价值：** 学习现代 OpenGL 的 Direct State Access（DSA，不再需要繁琐的全局绑定上下文）、材质系统抽象以及基于 FBO 的编辑器视口集成。

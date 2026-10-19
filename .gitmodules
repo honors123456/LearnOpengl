@@ -1,0 +1,9 @@
+[submodule "tinyrenderer"]
+	path = tinyrenderer
+	url = https://github.com/ssloy/tinyrenderer.git
+[submodule "LoadX"]
+	path = LoadX
+	url = https://github.com/AfonsoPaiva/LoadX
+[submodule "opengl-tutorials"]
+	path = opengl-tutorials
+	url = https://github.com/VictorGordan/opengl-tutorials.git
