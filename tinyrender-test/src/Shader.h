@@ -220,7 +220,7 @@ public:
         );
 
         int ly = static_cast<int>(
-            (1.0f-light_ndc_pos.y()) * 0.5f * (height - 1)
+            (1.0f - light_ndc_pos.y()) * 0.5f * (height - 1)
         );
 
         if(lx >=0 && lx<width && ly>=0 && ly<height)
