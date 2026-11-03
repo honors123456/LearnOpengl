@@ -1,6 +1,3 @@
-[submodule "tinyrenderer"]
-	path = tinyrenderer
-	url = https://github.com/ssloy/tinyrenderer.git
 [submodule "LoadX"]
 	path = LoadX
 	url = https://github.com/AfonsoPaiva/LoadX

@@ -27,6 +27,8 @@ Eigen::Matrix4f transform = Eigen::Matrix4f::Identity();
 
 添加依赖后需重新执行下文的 CMake 配置命令，以更新 IDE 工程的包含路径。
 
+`SoftwareRenderer::orthographic(left, right, bottom, top, nearPlane, farPlane)` 返回 OpenGL 右手正交投影矩阵，使用列向量。相机空间的 X/Y 边界映射到 NDC 的 `[-1, 1]`，`z = -nearPlane` 映射到 `-1`，`z = -farPlane` 映射到 `1`，齐次分量 w 保持为 1。参数必须有限，且满足 `left < right`、`bottom < top`、`0 <= nearPlane < farPlane`，否则抛出 `std::invalid_argument`。例如：`renderer.setProjectionMatrix(renderer.orthographic(-1, 1, -1, 1, 0.1f, 10.0f));`。
+
 ## 图片接口
 
 `SoftwareRenderer::lookAt(camera, center, up)` 返回右手坐标系的世界到相机视图矩阵，使用列向量，相机朝负 Z 方向观察。用 `view * Eigen::Vector4f(x, y, z, 1)` 转换位置；camera 为相机位置，center 为观察目标，up 为参考向上方向。当前主程序通过构造函数调用此函数；调用方须提供有效相机参数。

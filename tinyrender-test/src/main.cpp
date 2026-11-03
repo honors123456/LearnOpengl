@@ -60,20 +60,67 @@ int main()
     }
 
     ImageView image;
-    ParseAssimp model;
-    TGAImage diffuse, normal;
-    const bool loaded = model.loadData("../obj/african_head/african_head.obj") &&
-        diffuse.read_tga_file("../obj/african_head/african_head_diffuse.tga") &&
-        normal.read_tga_file("../obj/african_head/african_head_nm.tga");
     SoftwareRenderer renderer;
     TGAImage tga(1024, 1024, TGAImage::RGB);
     std::vector<float> zbuffer(1024 * 1024, std::numeric_limits<float>::infinity());
-    if (loaded) {
-        TexShader shader(model, Eigen::Vector3f(0, 0, 1), renderer.transform(), diffuse, normal);
-        renderer.drawModel(model, shader, tga, zbuffer);
-    } else {
-        std::fprintf(stderr, "Failed to load model or textures.\n");
+
+    //head数据
+    ParseAssimp head;
+    TGAImage headDiffuse, headNormal;
+    bool headLoaded = head.loadData("../obj/african_head/african_head.obj") && 
+        headDiffuse.read_tga_file("../obj/african_head/african_head_diffuse.tga") &&
+        headNormal.read_tga_file("../obj/african_head/african_head_nm.tga");
+
+    if(!headLoaded)
+    {
+        std::fprintf(stderr, "Failed to load head model or textures.\n");
+        return -1;
     }
+
+    //eye数据
+    ParseAssimp eyes;
+    TGAImage eyesDiffuse, eyesNormal;
+    bool eyeLoaded = eyes.loadData("../obj/african_head/african_head_eye_inner.obj") &&
+        eyesDiffuse.read_tga_file("../obj/african_head/african_head_eye_inner_diffuse.tga") &&
+        eyesNormal.read_tga_file("../obj/african_head/african_head_eye_inner_nm.tga");
+
+    if(!eyeLoaded)
+    {
+        std::fprintf(stderr, "Failed to load eye model or textures.\n");
+        return -1;
+    }
+
+    //Pass 1:得到深度信息
+    //离屏缓存buffer
+    Eigen::Vector3f light_dir(1.0f,1.0f,1.0f);
+    Eigen::Vector3f cameraPos(0.0f,0.0f,3.0f);
+    Eigen::Vector3f center(0.0f,0.0f,0.0f);
+    Eigen::Vector3f up(0.0f,1.0f,0.0f);
+    std::vector<float> shadowBuffer(1024 * 1024, std::numeric_limits<float>::max());
+    TGAImage shadowFrame(1024, 1024, TGAImage::RGB);
+
+    //MVP
+    Eigen::Matrix4f lightModel = Eigen::Matrix4f::Identity();
+    Eigen::Vector3f lightPos = center + light_dir.normalized() * 10.0f;
+    Eigen::Matrix4f lightView = renderer.lookAt(lightPos,center,up);
+    Eigen::Matrix4f lightProjection = renderer.orthographic(-1.5f, 1.5f, -1.5f, 1.5f, 0.1f, 10.0f);
+    Eigen::Matrix4f lightTransform = lightProjection * lightView * lightModel;
+
+    Eigen::Matrix4f cameraTransform = renderer.transform();
+
+    DepthShader headDepthShader(head,lightTransform);
+    renderer.drawModel(head,headDepthShader,shadowFrame,shadowBuffer);
+
+    DepthShader eyeDepthShader(eyes,lightTransform);
+    renderer.drawModel(eyes,eyeDepthShader,shadowFrame,shadowBuffer);
+
+    //Pass 2:利用深度信息正常渲染物体
+    ShadowShader headShadowShader(head,light_dir,cameraTransform,lightTransform,shadowBuffer,1024,1024,headDiffuse,headNormal);
+    renderer.drawModel(head,headShadowShader,tga,zbuffer);
+
+    ShadowShader eyeShadowShader(eyes,light_dir,cameraTransform,lightTransform,shadowBuffer,1024,1024,eyesDiffuse,eyesNormal);
+    renderer.drawModel(eyes,eyeShadowShader,tga,zbuffer);
+    
     image.SetImage(tga);
     
     while (!glfwWindowShouldClose(window)) {
