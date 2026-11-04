@@ -1,0 +1,15 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="ui/Theme.qml">Theme.qml</file>
+        <file alias="ui/qmldir">qmldir</file>
+        <file alias="ui/LabButton.qml">LabButton.qml</file>
+        <file alias="ui/LabModule.qml">LabModule.qml</file>
+        <file alias="ui/ViewportPlaceholder.qml">ViewportPlaceholder.qml</file>
+        <file alias="ui/ParameterControl.qml">ParameterControl.qml</file>
+        <file alias="ui/main.qml">main.qml</file>
+        <file alias="ui/PbrModule.qml">PbrModule.qml</file>
+        <file alias="ui/DeferredModule.qml">DeferredModule.qml</file>
+        <file alias="ui/SsaoModule.qml">SsaoModule.qml</file>
+        <file alias="ui/GpuModule.qml">GpuModule.qml</file>
+    </qresource>
+</RCC>

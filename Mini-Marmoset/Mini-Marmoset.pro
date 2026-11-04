@@ -1,54 +1,45 @@
+# Single qmake application; all four labs are selectable in the workbench.
 TEMPLATE = app
 TARGET = Mini-Marmoset
 
-QT += quick qml gui opengl
-CONFIG += c++17
+SOURCES += $$quote($$PWD/main.cpp)
+INCLUDEPATH += $$quote($$PWD)
+
+QT += quick qml gui quickcontrols2
+CONFIG += c++17 warn_on
 CONFIG -= console app_bundle
 
-DESTDIR = $$PWD/bin
-
-INCLUDEPATH += \
-    $$PWD/shader \
-    $$PWD/../External/include
-
-
-include(common.pri)
-
-INCLUDEPATH += $$OPENCV_INCLUDE_DIR
-
-LIBS += -L$$OPENCV_BIN_DIR
-LIBS += -L$$OPENCV_LIB_DIR
-
-SOURCES += \
-    src/main.cpp \
-    src/MarmosetItem.cpp \
-    shader/shader.cpp \
-    $$PWD/../External/src/glad.c
-
-HEADERS += \
-    src/MarmosetItem.h \
-    shader/shader.h
-
-RESOURCES += $$PWD/qml.qrc
-
 DISTFILES += \
-    shader/pbrShader.vert \
-    shader/pbrShader.frag \
-    shader/lightShader.vert \
-    shader/lightShader.frag \
-    shader/skyShader.frag \
-    shader/skyShader.vert
+    $$quote($$PWD/ui/qmldir) \
+    $$files($$PWD/ui/*.qml) \
+    AGENTS.md README.md docs/ROADMAP.md docs/PRODUCT.md docs/DESIGN.md
 
-LIBS += \
-    -L$$PWD/../External/lib \
-    -lopengl32
+QML_IMPORT_PATH += $$quote($$PWD/ui)
 
-DEFINES += SHADER_DIR=\\\"$$PWD/shader\\\"
-
-CONFIG(debug, debug|release){
-LIBS += -L$$OPENCV_LIB_DIR -lopencv_world440d
-LIBS += -L$$OPENCV_LIB_DIR -lopencv_img_hash440d
-}else{
-LIBS += -L$$OPENCV_LIB_DIR -lopencv_world440
-LIBS += -L$$OPENCV_LIB_DIR -lopencv_img_hash440
+CONFIG(debug, debug|release) {
+    LAB_BUILD_VARIANT = debug
+} else {
+    LAB_BUILD_VARIANT = release
 }
+
+win32-msvc: QMAKE_CXXFLAGS += /execution-charset:utf-8
+
+DESTDIR = $$PWD/bin
+LAB_BUILD_DIR = $$PWD/build/qmake/$$LAB_BUILD_VARIANT
+OBJECTS_DIR = $$LAB_BUILD_DIR/obj
+MOC_DIR = $$LAB_BUILD_DIR/moc
+RCC_DIR = $$LAB_BUILD_DIR/rcc
+UI_DIR = $$LAB_BUILD_DIR/ui
+win32-msvc {
+    QMAKE_LFLAGS += /PDB:$$quote($$LAB_BUILD_DIR/Mini-Marmoset.pdb)
+    QMAKE_LFLAGS += /ILK:$$quote($$LAB_BUILD_DIR/Mini-Marmoset.ilk)
+}
+
+RESOURCES += $$quote($$PWD/ui/workbench.qrc)
+include($$PWD/Logging/Logging.pri)
+include($$PWD/Geometry/Geometry.pri)
+
+include($$PWD/Pbr_lab/Pbr_lab.pri)
+include($$PWD/Deferred_lab/Deferred_lab.pri)
+include($$PWD/Ssao_lab/Ssao_lab.pri)
+include($$PWD/Gpu_lab/Gpu_lab.pri)

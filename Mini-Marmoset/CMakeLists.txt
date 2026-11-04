@@ -1,77 +1,39 @@
-# 指定当前工程需要的最低 CMake 版本。
 cmake_minimum_required(VERSION 3.20)
-
-# 定义工程名称，并声明当前工程会使用 C 和 C++。
 project(Mini-Marmoset LANGUAGES C CXX)
 
-find_package(Qt5 5.12 REQUIRED COMPONENTS Quick Qml Gui OpenGL)
-
-# 指定 C++ 标准为 C++17，并要求编译器必须支持该标准。
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin/$<0:>")
+set(CMAKE_PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/pdb")
+set(CMAKE_COMPILE_PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/pdb")
 
-# 计算常用目录：
-# PROJECT_ROOT_DIR 是当前 CMakeLists.txt 的上一级目录。
-# EXTERNAL_DIR 是第三方库目录。
-# OUTPUT_DIR 是最终程序和库文件的输出目录。
-set(PROJECT_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/..")
-set(EXTERNAL_DIR "${PROJECT_ROOT_DIR}/External")
-set(OUTPUT_DIR "${CMAKE_CURRENT_LIST_DIR}/bin")
+find_package(Qt5 5.12 REQUIRED COMPONENTS Quick Qml Gui QuickControls2)
 
-# 转成绝对路径，避免相对路径写法不同导致比较失败。
-
-# 检查当前构建目录是否是 CMakeLists.txt 同级的 build 目录。
-# CMakeLists.txt 本身不能主动决定 -B 目录，所以这里用校验来约束。
-# 设置单配置生成器的输出目录，例如 Ninja 或 Makefiles。
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
-
-# 设置多配置生成器的输出目录，例如 Visual Studio。
-# 这样 Debug、Release 等配置都会输出到同级 bin 目录。
-foreach(CONFIG_TYPE IN LISTS CMAKE_CONFIGURATION_TYPES)
-    string(TOUPPER "${CONFIG_TYPE}" CONFIG_TYPE_UPPER)
-    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${CONFIG_TYPE_UPPER} "${OUTPUT_DIR}")
-    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_${CONFIG_TYPE_UPPER} "${OUTPUT_DIR}")
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${CONFIG_TYPE_UPPER} "${OUTPUT_DIR}")
-endforeach()
-
-# 收集当前示例程序的源文件。
-set(SOURCES
-    src/main.cpp
-    src/MarmosetItem.cpp
-    shader/shader.cpp
-    "${EXTERNAL_DIR}/src/glad.c"
+add_subdirectory(Geometry)
+add_executable(Mini-Marmoset
+    main.cpp
+    ui/workbench.qrc
 )
-
-qt5_add_resources(QT_RESOURCES qml.qrc)
-
-# 生成可执行程序，目标名使用 project() 里定义的 Triangle。
-add_executable(${PROJECT_NAME} ${SOURCES} ${QT_RESOURCES})
-
-# 添加头文件搜索路径，让代码可以 include Qt、GLAD 和 GLM。
-target_include_directories(${PROJECT_NAME} PRIVATE
-    "${CMAKE_CURRENT_LIST_DIR}/shader"
-    "${EXTERNAL_DIR}/include"
-)
-
-target_compile_definitions(${PROJECT_NAME} PRIVATE
-    SHADER_DIR="${CMAKE_CURRENT_LIST_DIR}/shader"
-)
-
-# 链接 Qt Quick/QML、Qt OpenGL 和 Windows OpenGL。
-target_link_libraries(${PROJECT_NAME} PRIVATE
-    Qt5::Quick
-    Qt5::Qml
-    Qt5::Gui
-    Qt5::OpenGL
-    opengl32
-)
-
-# 根据编译器类型开启常用警告选项。
+target_include_directories(Mini-Marmoset PRIVATE "${PROJECT_SOURCE_DIR}")
+target_link_libraries(Mini-Marmoset PRIVATE
+    Qt5::Quick Qt5::Qml Qt5::Gui Qt5::QuickControls2 MarmosetGeometry)
 if(MSVC)
-    target_compile_options(${PROJECT_NAME} PRIVATE /W4 /source-charset:gb2312)
+    target_compile_options(Mini-Marmoset PRIVATE /W4 /execution-charset:utf-8)
+    set_target_properties(Mini-Marmoset PROPERTIES COMPILE_PDB_NAME "Mini-Marmoset")
 else()
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(Mini-Marmoset PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_subdirectory(Logging)
+add_subdirectory(Pbr_lab)
+add_subdirectory(Deferred_lab)
+add_subdirectory(Ssao_lab)
+add_subdirectory(Gpu_lab)
+
+option(BUILD_GEOMETRY_TESTS "Build CPU-only geometry and OBJ regression tests" OFF)
+if(BUILD_GEOMETRY_TESTS)
+    enable_testing()
+    add_subdirectory(tests/Geometry)
 endif()
