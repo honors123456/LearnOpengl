@@ -25,7 +25,9 @@ Rectangle {
             var horizon = height * 0.58
             for (var x = -width * 2; x <= width * 3; x += 100) {
                 ctx.beginPath(); ctx.moveTo(width / 2 + (x - width / 2) * 0.12, horizon)
-                ctx.lineTo(x, height); ctx.stroke()
+                ctx.lineTo(x, height);
+                ctx.stroke();
+
             }
             for (var i = 1; i <= 9; ++i) {
                 var y = horizon + (height - horizon) * Math.pow(i / 9, 2)

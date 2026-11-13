@@ -1,8 +1,18 @@
 import QtQuick 2.12
-
+import Marmoset.Labs 1.0
+import QtQml 2.12
 
 // GPU 实例与模拟的界面配置；继承公共模块契约，目前不包含实际 GPU 渲染。
 LabModule {
+    id: moduleRoot
+    // 当前模块独立创建 OpenGL 视口；参数和实验选择同步给 C++ 渲染器。
+    viewportComponent: Component {
+        GpuLab {
+            parameters: moduleRoot.parameters
+            experimentIndex: moduleRoot.experimentIndex
+        }
+    }
+
     // 定义模块身份、显示标题和渲染实现的接入目录。
     moduleId: "gpu"
     title: "GPU Simulation"
@@ -29,6 +39,7 @@ LabModule {
     parameterSpecs: [
         {
             "key": "instanceCount",
+            "presets": [{"label":"1 万","value":10000},{"label":"10 万","value":100000},{"label":"100 万","value":1000000}],
             "label": "实例数量",
             "from": 1000,
             "to": 1000000,
@@ -53,6 +64,7 @@ LabModule {
         },
         {
             "key": "seed",
+            "editor": "integer",
             "label": "随机种子",
             "from": 0,
             "to": 9999,

@@ -1,7 +1,7 @@
 # 架构与模块接入
 ## 构建边界
 
-qmake 与 CMake 均构建单个 `Mini-Marmoset` 应用，唯一入口为根 `main.cpp`，加载 `ui/main.qml`。四个 lab 分别提供 `PbrLab`、`DeferredLab`、`SsaoLab`、`GpuLab` 类，目前为待实现的类骨架，不包含渲染算法。模块源码由各自同名 `.pri` 和 CMakeLists.txt 管理，日志与几何工具使用独立模块，QML 资源由根构建直接引用 `ui/workbench.qrc`。
+qmake 与 CMake 均构建单个 `Mini-Marmoset` 应用，唯一入口为根 `main.cpp`，加载 `ui/main.qml`。四个 lab 分别提供 `PbrLab`、`DeferredLab`、`SsaoLab`、`GpuLab` 类，均继承 `QQuickFramebufferObject`，各自包含独立 Renderer，目前只清屏，不包含实验渲染算法。模块源码由各自同名 `.pri` 和 CMakeLists.txt 管理，日志与几何工具使用独立模块，QML 资源由根构建直接引用 `ui/workbench.qrc`。
 
 ## UI 与状态
 `main.qml` 负责模块选择、实验列表、视口Loader、通用参数检查器和诊断区。四个模块的 Loader 常驻，因此参数和实验选择在模块切换时保留。只有当前模块的 `viewportComponent` 被实例化，切换时旧视口销毁。
@@ -20,7 +20,11 @@ qmake 与 CMake 均构建单个 `Mini-Marmoset` 应用，唯一入口为根 `mai
 通过 `setParameter(key, value)` 修改参数：未知键、非数值和非有限值被拒绝，超出范围的值被限制在边界。`resetParameters()` 恢复当前模块默认值。当前版本参数仅保存在内存，不写配置文件。
 ## 接入 OpenGL
 
-1. 在模块 render/ 中实现自己的 QQuickFramebufferObject 和 Renderer。
+当前四个模块 QML 均导入 `Marmoset.Labs 1.0`，通过 `viewportComponent` 创建对应的 lab 视口；`main.cpp` 在加载引擎前注册四个类型。`parameters`（`QVariantMap`）和 `experimentIndex`（非负整数）通过 QML 绑定传入；属性变化调用 `update()`，Renderer 在 `synchronize()` 中复制快照。每个视口创建带深度和模板附件的 FBO，只清屏并恢复 Qt Quick 的 OpenGL 状态，不持续请求空帧。`rendererReady` 仍为 `false`，表示实验算法尚未接入。
+
+后续接入实验算法：
+
+1. 在各模块现有 lab 类的 Renderer 中实现算法；需要拆分时再放入模块内部 render/。
 2. 在模块 .pri 与 CMakeLists.txt 中添加源文件及实际所需的依赖。需要特定 OpenGL 格式时，在根 main.cpp 创建 QGuiApplication 之前设置，并在运行时核对上下文能力。
 3. 在根 main.cpp 创建应用之后、加载 QML 引擎之前调用 qmlRegisterType()；GL 资源初始化放在渲染阶段。
 4. 在 ui/ 对应模块的 QML 中设置 viewportComponent，真正接入渲染后将 rendererReady 设为 true，例如：
@@ -29,7 +33,8 @@ qmake 与 CMake 均构建单个 `Mini-Marmoset` 应用，唯一入口为根 `mai
 LabModule {
     id: moduleRoot
     rendererReady: true
-    // 保留本模块已有元数据、defaults、parameterSpecs 等。    viewportComponent: Component {
+    // 保留本模块已有元数据、defaults、parameterSpecs 等。
+    viewportComponent: Component {
         MyRenderView {
             parameters: moduleRoot.parameters
             experimentIndex: moduleRoot.experimentIndex
@@ -46,4 +51,4 @@ QML 和UI 线程只修改属性。Renderer 在`synchronize()` 复制参数，在
 Shader、Texture、Camera、Framebuffer、GPU Mesh 和GPU Timer 等能力在出现真实复用时再提取到`common/render/` 或`common/scene/`。当前没有空实现的渲染接口、通用 Render Graph 或未使用的抽象基类。
 ## 验证
 
-四个目标应分别构建；运行时检查四个模块、参数数值输入和滑块同步、模块间状态保留、当前模块重置、阶段选择、诊断区收起，以及1080 × 720 布局。`--capture <absolute-file>` 在窗口渲染后保存截图并退出；`--module 0..3` 选择模块，非法索引退出码与2；`--compact` 使用窄窗口。此截图入口只抓取UI，不提供渲染算法成GPU 性能验证。
+构建单个 `Mini-Marmoset` 目标；运行时检查四个模块、参数数值输入和滑块同步、模块间状态保留、当前模块重置、阶段选择、诊断区收起，以及1080 × 720 布局。`--capture <absolute-file>` 在窗口渲染后保存截图并退出；`--module 0..3` 选择模块，非法索引退出码与2；`--compact` 使用窄窗口。此截图入口只抓取UI，不提供渲染算法成GPU 性能验证。

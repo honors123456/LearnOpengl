@@ -1,6 +1,7 @@
 import QtQuick 2.12
+import QtQml 2.12
 
-// 各实验 QML 的公共契约：描述实验、参数和管线阶段，默认显示占位视口。
+// 各实验 QML 的公共契约：描述实验、参数和管线阶段，默认视口留空。
 Item {
     id: root
     // 模块身份与接入位置，仅作为展示和路由元数据。
@@ -18,10 +19,8 @@ Item {
     property var defaults: ({})
     property var parameters: ({})
     property var stages: []
-    // 视口通过组件注入；具体模块可用真正的渲染 Item 替换占位实现。
-    property Component viewportComponent: Component {
-        ViewportPlaceholder { module: root }
-    }
+    // 视口通过组件注入；具体模块接入渲染 Item 前不创建视口对象。
+    property Component viewportComponent: null
     readonly property string experimentTitle: experiments.length ? experiments[experimentIndex].title : ""
     readonly property string experimentDescription: experiments.length ? experiments[experimentIndex].description : ""
 
@@ -38,6 +37,7 @@ Item {
     }
     // 复制默认值而非共享同一对象，避免编辑当前值时污染默认配置。
     function resetParameters() { parameters = Object.assign({}, defaults) }
+
     // 模块创建完成后初始化参数；模块常驻时可保留会话状态。
     Component.onCompleted: resetParameters()
 }

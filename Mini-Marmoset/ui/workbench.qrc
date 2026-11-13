@@ -1,5 +1,6 @@
 <RCC>
     <qresource prefix="/">
+        <file alias="icons/mini-marmoset.png">../assets/icons/mini-marmoset.png</file>
         <file alias="ui/Theme.qml">Theme.qml</file>
         <file alias="ui/qmldir">qmldir</file>
         <file alias="ui/LabButton.qml">LabButton.qml</file>

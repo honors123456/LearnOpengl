@@ -1,7 +1,14 @@
 #include "Logger.h"
+#include "Pbr_lab/PbrLab.h"
+#include "Deferred_lab/DeferredLab.h"
+#include "Ssao_lab/SsaoLab.h"
+#include "Gpu_lab/GpuLab.h"
+
+#include <QtQml/qqml.h>
 
 #include <QCommandLineParser>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -19,6 +26,8 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("Mini-Marmoset"));
     app.setOrganizationName(QStringLiteral("OpenGL Lab"));
+    // 从内嵌资源设置窗口图标，不依赖运行目录。
+    app.setWindowIcon(QIcon(QStringLiteral(":/icons/mini-marmoset.png")));
 
     // 初始化可执行文件旁的 logs/，并接管 Qt/QML 日志。
     // 初始化失败时继续启动，警告仍交给 Qt 原有的日志处理器输出。
@@ -53,6 +62,12 @@ int main(int argc, char *argv[])
 
     // 在加载界面前向 QML 根上下文传入启动参数，使界面初始化即可读取。
     // 后续需要注册自定义 QML 类型时，也应在 engine.load() 之前完成。
+    // 注册四个独立视口类型；构造函数不创建 GL 资源。
+    qmlRegisterType<PbrLab>("Marmoset.Labs", 1, 0, "PbrLab");
+    qmlRegisterType<DeferredLab>("Marmoset.Labs", 1, 0, "DeferredLab");
+    qmlRegisterType<SsaoLab>("Marmoset.Labs", 1, 0, "SsaoLab");
+    qmlRegisterType<GpuLab>("Marmoset.Labs", 1, 0, "GpuLab");
+
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("initialModuleIndex"), initialModule);
     engine.rootContext()->setContextProperty(QStringLiteral("compactWindow"), parser.isSet(QStringLiteral("compact")));

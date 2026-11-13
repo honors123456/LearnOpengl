@@ -6,6 +6,12 @@ Button {
     id: control
     // selected 由上层业务状态驱动，与鼠标按下时的 down 状态分开。
     property bool selected: false
+    checked: selected
+    onToggled: if (checked !== selected) checked = Qt.binding(function() { return control.selected })
+    Accessible.checkable: checkable
+    Accessible.checked: selected
+    ToolTip.visible: (hovered || activeFocus) && label.truncated
+    ToolTip.text: text
     implicitHeight: 34
     implicitWidth: Math.max(72, label.implicitWidth + 24)
     hoverEnabled: true

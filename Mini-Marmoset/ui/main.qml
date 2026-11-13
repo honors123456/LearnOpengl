@@ -15,6 +15,7 @@ ApplicationWindow {
     minimumHeight: 640
     title: "Mini-Marmoset · " + (currentModule ? currentModule.title : "OpenGL Lab")
     color: Theme.background
+    background: Rectangle { color: Theme.background }
     font.family: Theme.fontFamily
     font.pixelSize: Theme.bodySize
     palette.window: Theme.surface
@@ -30,7 +31,11 @@ ApplicationWindow {
     property int moduleIndex: typeof initialModuleIndex !== "undefined" ? initialModuleIndex : 0
     property int stageIndex: 0
     property int diagnosticTab: 0
-    property bool diagnosticsOpen: true
+    property bool diagnosticsOpen: height >= 780
+    property bool focusViewport: false
+    property real experimentPanelWidth: 216
+    property real inspectorPanelWidth: 292
+    property real diagnosticPanelHeight: 190
     property bool experimentsOpen: width >= 1200
     property bool inspectorOpen: true
     property bool showGuides: true
@@ -80,10 +85,13 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+2"; onActivated: window.selectModule(1) }
     Shortcut { sequence: "Ctrl+3"; onActivated: window.selectModule(2) }
     Shortcut { sequence: "Ctrl+4"; onActivated: window.selectModule(3) }
+    Shortcut { sequence: "Ctrl+Shift+F"; onActivated: window.focusViewport = !window.focusViewport }
+    Shortcut { sequence: "Escape"; enabled: window.focusViewport; onActivated: window.focusViewport = false }
     Shortcut { sequence: "Ctrl+D"; onActivated: window.diagnosticsOpen = !window.diagnosticsOpen }
 
     // 主布局纵向分为顶部导航、中间工作区和底部状态栏。
     ColumnLayout {
+        objectName: "workbenchLayout"
         anchors.fill: parent
         spacing: 0
 
@@ -107,6 +115,7 @@ ApplicationWindow {
                         LabButton {
                             objectName: "moduleButton" + index
                             text: modelData
+                            checkable: true
                             selected: window.moduleIndex === index
                             onClicked: window.selectModule(index)
                             ToolTip.visible: hovered
@@ -128,8 +137,8 @@ ApplicationWindow {
 
             Rectangle {
                 // 左侧列表由当前模块 experiments 提供，按面板开关控制显示。
-                visible: window.experimentsOpen
-                Layout.preferredWidth: 216
+                visible: window.experimentsOpen && !window.focusViewport
+                Layout.preferredWidth: Math.min(window.experimentPanelWidth, window.width - 650)
                 Layout.fillHeight: true
                 color: Theme.surface
                 ColumnLayout {
@@ -144,6 +153,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             implicitHeight: 42
                             text: modelData.title
+                            checkable: true
                             selected: window.currentModule && window.currentModule.experimentIndex === index
                             onClicked: {
                                 window.currentModule.experimentIndex = index
@@ -154,7 +164,7 @@ ApplicationWindow {
                     Item { Layout.fillHeight: true }
                     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
                     Label {
-                        text: "每个模块独立构建，\n共享界面与交互组件。"
+                        text: "同一工作台切换四个模块，\n共享界面与交互组件。"
                         color: Theme.muted; font.pixelSize: 11; lineHeight: 1.6
                         Layout.topMargin: 10; Layout.bottomMargin: 8
                     }
@@ -165,7 +175,25 @@ ApplicationWindow {
                     }
                 }
             }
-            Rectangle { visible: window.experimentsOpen; Layout.fillHeight: true; width: 1; color: Theme.border }
+            Rectangle {
+                visible: window.experimentsOpen && !window.focusViewport
+                Layout.fillHeight: true; Layout.preferredWidth: 7; color: Theme.background
+                Rectangle { anchors.centerIn: parent; width: 1; height: parent.height; color: Theme.border }
+                MouseArea {
+                    objectName: "experimentResizeHandle"
+                    anchors.fill: parent; cursorShape: Qt.SizeHorCursor
+                    property real startX
+                    property real startWidth
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.Slider
+                    Accessible.name: "实验列表宽度，左右方向键调整"
+                    Keys.onLeftPressed: window.experimentPanelWidth = Math.max(190, window.experimentPanelWidth - 10)
+                    Keys.onRightPressed: window.experimentPanelWidth = Math.min(280, window.experimentPanelWidth + 10)
+                    Rectangle { anchors.fill: parent; color: parent.activeFocus ? Theme.accent : "transparent" }
+                    onPressed: { forceActiveFocus(); startX = mapToItem(window.contentItem, mouse.x, 0).x; startWidth = window.experimentPanelWidth }
+                    onPositionChanged: if (pressed) window.experimentPanelWidth = Math.max(190, Math.min(280, startWidth + (mapToItem(window.contentItem, mouse.x, 0).x - startX)))
+                }
+            }
 
             ColumnLayout {
                 Layout.fillWidth: true
@@ -180,6 +208,8 @@ ApplicationWindow {
                         anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 8
                         LabButton {
                             objectName: "experimentsToggle"
+                            enabled: !window.focusViewport
+                            checkable: true
                             text: "实验列表"; selected: window.experimentsOpen
                             onClicked: window.experimentsOpen = !window.experimentsOpen
                         }
@@ -196,7 +226,18 @@ ApplicationWindow {
                         }
                         Item { Layout.fillWidth: true }
                         LabButton {
+                            objectName: "focusViewportToggle"
+                            text: window.focusViewport ? "退出专注" : "专注视口"
+                            checkable: true
+                            selected: window.focusViewport
+                            onClicked: window.focusViewport = !window.focusViewport
+                            ToolTip.visible: hovered || activeFocus
+                            ToolTip.text: "专注视口 · Ctrl+Shift+F；Esc 退出"
+                        }
+                        LabButton {
                             objectName: "inspectorToggle"
+                            enabled: !window.focusViewport
+                            checkable: true
                             text: "参数"; selected: window.inspectorOpen
                             onClicked: window.inspectorOpen = !window.inspectorOpen
                         }
@@ -204,9 +245,25 @@ ApplicationWindow {
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
 
+                Label {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 16; Layout.rightMargin: 16
+                    Layout.topMargin: 10; Layout.bottomMargin: 10
+                    visible: !window.focusViewport
+                    text: window.currentModule ? window.currentModule.experimentDescription : "正在加载实验…"
+                    background: Rectangle { color: Theme.background }
+                    color: Theme.muted; font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+
                 Item {
-                    Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 180
+                    id: viewportArea
+                    Layout.fillWidth: true;
+                    Layout.fillHeight: true;
+                    Layout.minimumHeight: 180
+
                     clip: true
+
                     Loader {
                         // 仅实例化当前模块的视口组件，切换组件时销毁旧视口。
                         id: viewportLoader
@@ -214,6 +271,7 @@ ApplicationWindow {
                         sourceComponent: window.currentModule ? window.currentModule.viewportComponent : null
                         onLoaded: if (item && "showGuides" in item) item.showGuides = Qt.binding(function() { return window.showGuides })
                     }
+
                     Row {
                         anchors.top: parent.top; anchors.left: parent.left; anchors.margins: 16
                         spacing: 8
@@ -223,104 +281,45 @@ ApplicationWindow {
                             Label { id: viewportLabel; anchors.centerIn: parent; text: "视口 / " + (window.currentModule && window.currentModule.rendererReady ? "已接入" : "待接入"); color: Theme.muted; font.pixelSize: 11 }
                         }
                     }
+
                     LabButton {
-                        anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 16
+                        anchors.top: parent.top;
+                        anchors.right: parent.right;
+                        anchors.margins: 16
                         visible: viewportLoader.item !== null && "showGuides" in viewportLoader.item
-                        text: "辅助网格"; selected: window.showGuides
+                        text: "辅助网格";
+                        checkable: true
+                        selected: window.showGuides
                         onClicked: window.showGuides = !window.showGuides
                     }
                 }
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
-                Rectangle {
-                    Layout.fillWidth: true; Layout.preferredHeight: 40; color: Theme.surface
-                    RowLayout {
-                        anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 6
-                        Repeater {
-                            model: ["渲染管线", "接入说明", "性能"]
-                            LabButton {
-                                objectName: "diagnosticTab" + index
-                                text: modelData
-                                implicitHeight: 28
-                                selected: window.diagnosticsOpen && window.diagnosticTab === index
-                                onClicked: { window.diagnosticTab = index; window.diagnosticsOpen = true }
-                            }
-                        }
-                        Item { Layout.fillWidth: true }
-                        LabButton {
-                            objectName: "diagnosticsToggle"
-                            text: window.diagnosticsOpen ? "收起" : "展开"
-                            implicitHeight: 28
-                            onClicked: window.diagnosticsOpen = !window.diagnosticsOpen
-                            ToolTip.visible: hovered; ToolTip.text: "切换诊断面板 · Ctrl+D"
-                        }
-                    }
-                }
-
-                Rectangle {
-                    // 诊断面板展示管线说明、接入指引和性能状态，不执行 GPU Pass。
-                    visible: window.diagnosticsOpen
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: window.height < 780 ? 150 : 190
-                    color: Theme.surface
-                    ScrollView {
-                        anchors.fill: parent; anchors.margins: 16
-                        clip: true
-                        contentWidth: availableWidth
-                        ColumnLayout {
-                            width: parent.width
-                            spacing: 12
-                            visible: window.diagnosticTab === 0
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: 6
-                                Repeater {
-                                    model: window.currentModule ? window.currentModule.stages : []
-                                    LabButton {
-                                        Layout.fillWidth: true
-                                        Layout.minimumWidth: 0
-                                        text: modelData.title
-                                        selected: window.stageIndex === index
-                                        onClicked: window.stageIndex = index
-                                    }
-                                }
-                            }
-                            Label {
-                                text: window.currentModule && window.currentModule.stages.length ? window.currentModule.stages[window.stageIndex].description : ""
-                                color: Theme.text; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true
-                            }
-                            Label { text: window.currentModule && window.currentModule.rendererReady ? "阶段说明 · 渲染器已接入" : "阶段定义已预留 · 尚未执行 GPU Pass"; color: Theme.muted; font.pixelSize: 11 }
-                        }
-                        ColumnLayout {
-                            width: parent.width
-                            spacing: 9
-                            visible: window.diagnosticTab === 1
-                            Label { text: "从模块入口接入你的渲染器"; color: Theme.text; font.pixelSize: 14; font.weight: Font.DemiBold }
-                            Label {
-                                text: window.currentModule ? window.currentModule.entryPath : ""
-                                color: Theme.accent; font.pixelSize: 11; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true
-                            }
-                            Label {
-                                text: "替换 viewportComponent；读取 parameters 和 experimentIndex。\n通过 synchronize() 将参数同步到渲染线程，GL 资源只在渲染线程创建与释放。"
-                                color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true
-                            }
-                        }
-                        ColumnLayout {
-                            width: parent.width
-                            spacing: 12
-                            visible: window.diagnosticTab === 2
-                            Label { text: "GPU 计时器尚未接入"; color: Theme.text; font.pixelSize: 14; font.weight: Font.DemiBold }
-                            Label { text: "CPU 帧耗时：未采样    GPU 帧耗时：未采样"; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                            Label { text: "接入真实计时后显示数据；UI 刷新速度不能代替渲染性能。"; color: Theme.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                        }
-                    }
-                }
             }
 
-            Rectangle { visible: window.inspectorOpen; Layout.fillHeight: true; width: 1; color: Theme.border }
+            Rectangle {
+                visible: window.inspectorOpen && !window.focusViewport
+                Layout.fillHeight: true; Layout.preferredWidth: 7; color: Theme.background
+                Rectangle { anchors.centerIn: parent; width: 1; height: parent.height; color: Theme.border }
+                MouseArea {
+                    objectName: "inspectorResizeHandle"
+                    anchors.fill: parent; cursorShape: Qt.SizeHorCursor
+                    property real startX
+                    property real startWidth
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.Slider
+                    Accessible.name: "参数面板宽度，左右方向键调整"
+                    Keys.onLeftPressed: window.inspectorPanelWidth = Math.max(250, window.inspectorPanelWidth - 10)
+                    Keys.onRightPressed: window.inspectorPanelWidth = Math.min(400, window.inspectorPanelWidth + 10)
+                    Rectangle { anchors.fill: parent; color: parent.activeFocus ? Theme.accent : "transparent" }
+                    onPressed: { forceActiveFocus(); startX = mapToItem(window.contentItem, mouse.x, 0).x; startWidth = window.inspectorPanelWidth }
+                    onPositionChanged: if (pressed) window.inspectorPanelWidth = Math.max(250, Math.min(400, startWidth - (mapToItem(window.contentItem, mouse.x, 0).x - startX)))
+                }
+            }
             // 右侧按参数规格动态创建编辑控件，重置仅影响当前模块。
             Rectangle {
-                visible: window.inspectorOpen
-                Layout.preferredWidth: window.width < 1200 ? 264 : 292
+                visible: window.inspectorOpen && !window.focusViewport
+                Layout.preferredWidth: Math.min(window.inspectorPanelWidth, window.width < 1200 ? 280 : 400)
                 Layout.fillHeight: true
                 color: Theme.surface
                 ColumnLayout {
@@ -343,9 +342,12 @@ ApplicationWindow {
                         color: Theme.muted; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
+
                     ScrollView {
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        clip: true; contentWidth: availableWidth
+                        Layout.fillWidth: true;
+                        Layout.fillHeight: true;
+                        clip: true;
+                        contentWidth: availableWidth
                         ColumnLayout {
                             width: parent.width
                             spacing: 22
@@ -355,7 +357,13 @@ ApplicationWindow {
                             }
                         }
                     }
-                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
+
+                    Rectangle {
+                        Layout.fillWidth: true;
+                        height: 1;
+                        color: Theme.border
+                    }
+
                     Label {
                         text: "参数保留在当前会话中。\n切换模块不会丢失，关闭程序后重置。"
                         color: Theme.muted; font.pixelSize: 11; lineHeight: 1.5

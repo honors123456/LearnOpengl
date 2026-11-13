@@ -9,12 +9,20 @@ QT += quick qml gui quickcontrols2
 CONFIG += c++17 warn_on
 CONFIG -= console app_bundle
 
+win32: RC_ICONS = $$quote($$PWD/assets/icons/mini-marmoset.ico)
+
 DISTFILES += \
     $$quote($$PWD/ui/qmldir) \
     $$files($$PWD/ui/*.qml) \
     AGENTS.md README.md docs/ROADMAP.md docs/PRODUCT.md docs/DESIGN.md
 
 QML_IMPORT_PATH += $$quote($$PWD/ui)
+External = $$quote($$PWD/External)
+Eigen = $$quote($$PWD/Eigen)
+
+INCLUDEPATH += $$External/include
+INCLUDEPATH += $$Eigen/include
+
 
 CONFIG(debug, debug|release) {
     LAB_BUILD_VARIANT = debug
@@ -36,6 +44,8 @@ win32-msvc {
 }
 
 RESOURCES += $$quote($$PWD/ui/workbench.qrc)
+include($$PWD/Camera/Camera.pri)
+include($$PWD/Shader/Shader.pri)
 include($$PWD/Logging/Logging.pri)
 include($$PWD/Geometry/Geometry.pri)
 

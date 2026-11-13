@@ -1,5 +1,21 @@
 # 当前目录调整
 
+- 2026-11-11 18:00：进行中：PBR 接入与 27-PBR 一致的左键环绕和滚轮缩放，拖动灵敏度 0.2，俯仰限制 ±65°，距离限制 7～17；释放或丢失鼠标抓取后停止旋转。GUI 参数通过 synchronize 复制，render 计算相机位置及 view，以实际 FBO 尺寸计算 projection，并防止零尺寸除法。源码编码和静态调用链检查通过；未编译、未运行，实际鼠标交互和 GPU 绘制待验证。
+
+- 2026-11-10 16:42：进行中：PBR 改为通过 Qt 函数入口显式创建、绑定和删除 VAO／VBO／EBO，首次渲染上传现有球体数据，以 `sizeof`／`offsetof` 配置位置、法线和 UV；空数据不创建资源，后续帧不重复上传。保留 EBO 与 VAO 的绑定关系，渲染器销毁时释放资源；未接入 Shader 和绘制，当前仍只清屏。未编译、未运行，GPU 上传和释放待验证。
+
+- 2026-11-10 16:32：验证：Shader 使用的 21 个 GL 接口均存在于本机 Qt 5.12.12 头文件；源码 GB2312 往返检查、`git diff --check`、加载 MSVC 环境后的 qmake 配置生成通过。未编译、未运行；qmake 产物位于 `.tmp/qt-opengl-unify/`。
+
+- 2026-11-10 16:32：进行中：将 Shader 的 GLAD 调用改为 Qt `QOpenGLExtraFunctions`，移除 qmake 的 GLAD 编译和 GLFW 链接，去除 Shader.pri 大小写重复条目，补齐 CMake 的 Shader 源文件入口。静态检查通过，未编译、未运行；实际上下文能力及渲染集成待验证。
+
+- 2026-11-10 14:35：进行中：完成六项 UI 优化的 QML 实现，包括实验目标与空状态、参数范围和无效输入反馈、可调侧栏与诊断高度、专注模式、选中状态语义、GPU 实例档位与整数种子输入；修正单应用文案，同步 README 和 DESIGN。真实 C++／OpenGL 运行集成仍待验证。
+- 2026-11-10 14:35：验证：Qt 5.12.12 参数控件回归 6 passed／0 failed；隔离视口替身工作台测试 3 passed／0 failed，覆盖模块参数保留、专注切换、侧栏键盘与拖动调整。已检查 1440 × 900、960 × 640 及 GPU 面板的替身运行截图，产物位于 `.tmp/ui-optimization/`。替身仅验证 QML，不证明真实 FBO、屏幕阅读器或高 DPI 行为；CMake 所需两个模块入口仍缺失，未编译应用。
+
+- 2026-11-10 11:31：新增深色薄荷绿 M 字母应用图标，包含 SVG、256 像素 PNG 和八尺寸 ICO；`main.cpp` 设置内嵌窗口图标，qmake／CMake 配置 Windows 可执行文件图标。资源路径、SVG/XML、PNG 尺寸、ICO 全部尺寸、Qt 5.12.12 `rcc --list`、GB2312 往返和差异检查通过，已查看 PNG 图案；按用户既有要求未编译、未启动，EXE 嵌入与运行窗口显示待验证。
+
+- 2026-11-10 09:39：进行中：四个 lab 类改为独立 `QQuickFramebufferObject`，注册 `Marmoset.Labs 1.0` 并绑定各模块的 `viewportComponent`；参数和实验索引经 `synchronize()` 复制，当前只清屏，算法仍待接入。保留默认空视口契约及现有占位组件文件，不再实例化占位组件。同步四个 lab 的 CMake 源文件入口和接入文档。
+- 2026-11-10 09:39：静态验证：五个相关 QML 的 Qt 5.12.12 `qmllint`、四个视口头文件的 `moc` 解析、注册顺序与 QML／qmake／CMake 接线核对、GB2312 严格往返检查及 `git diff --check` 通过；按用户要求未编译、未运行，类型加载、实际 GL 上下文和切换行为待验证。当前 CMake 入口引用的 `Logging/CMakeLists.txt` 和 `Geometry/CMakeLists.txt` 已缺失，未修复该既有问题。
+
 - 2026-11-04 10:18：移除 Clang 不支持的 /source-charset:gb2312 参数，MSVC 依赖已核实的系统代码页 936 读取源码，保留 /execution-charset:utf-8。13 个源码 GB2312 解码检查、qmake 强制重编译与 CMake/MSVC Debug 构建通过；Qt Creator 代码模型刷新尚未验证。
 
 - 2026-11-04 10:16：按用户要求将全部 13 个项目 .h/.cpp 无损转为 GB2312，其他项目文本为 UTF-8；同步 AGENTS、README 和 qmake/CMake 的 MSVC 源码/执行字符集。修复 ARCHITECTURE、ROADMAP 已存在的截断 UTF-8 片段，转换前原始文件保存在 .tmp/encoding-fix/original/。57 个文本文件严格解码及往返检查通过，源码解码后文字与转换前完全一致，qmake/nmake、CMake/MSVC Debug 构建通过；未运行界面。

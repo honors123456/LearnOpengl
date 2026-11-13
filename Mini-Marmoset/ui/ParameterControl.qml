@@ -9,6 +9,8 @@ ColumnLayout {
     property var spec
     // 参数未就绪时显示 0，正常情况下以模块参数为唯一数据源。
     readonly property real currentValue: module && spec && module.parameters[spec.key] !== undefined ? module.parameters[spec.key] : 0
+    property string validationMessage: ""
+    onCurrentValueChanged: validationMessage = ""
     spacing: 5
 
     // 上方显示参数名称和精确数值输入，输入验证范围来自参数规格。
@@ -32,23 +34,51 @@ ColumnLayout {
             // 完成编辑或失焦时提交合法数值，非法/空输入恢复当前值。
             function commitOrRestore() {
                 var number = Number(text)
-                if (text.trim().length && acceptableInput && isFinite(number)) root.module.setParameter(root.spec.key, number)
+                if (text.trim().length && acceptableInput && isFinite(number)) {
+                    root.module.setParameter(root.spec.key, number)
+                } else {
+                    root.validationMessage = "输入无效，请输入 " + root.spec.from + "～" + root.spec.to + "；已恢复原值。"
+                }
                 // 手动编辑会打断 text 绑定，提交后重新绑定，继续响应滑块和重置。
                 text = Qt.binding(function() { return root.currentValue.toFixed(root.spec.decimals || 0) })
             }
-            onEditingFinished: commitOrRestore()
+            onTextEdited: root.validationMessage = ""
+            Keys.onReturnPressed: commitOrRestore()
+            Keys.onEnterPressed: commitOrRestore()
             onActiveFocusChanged: if (!activeFocus) commitOrRestore()
             Accessible.name: root.spec.label
+        }
+    }
+    Label {
+        Layout.fillWidth: true
+        text: root.validationMessage || ("范围：" + root.spec.from + "～" + root.spec.to)
+        color: root.validationMessage ? Theme.warning : Theme.muted
+        font.pixelSize: 11; wrapMode: Text.WordWrap
+        Accessible.name: text
+    }
+    RowLayout {
+        visible: root.spec.presets !== undefined
+        Layout.fillWidth: true
+        Repeater {
+            model: root.spec.presets || []
+            LabButton {
+                objectName: "parameterPreset_" + root.spec.key + "_" + index
+                Layout.fillWidth: true; implicitWidth: 0; implicitHeight: 28
+                text: modelData.label
+                checkable: true; selected: root.currentValue === modelData.value
+                onClicked: { root.validationMessage = ""; root.module.setParameter(root.spec.key, modelData.value) }
+            }
         }
     }
     // 拖动时通过模块的 setParameter() 更新数值，统一执行边界检查。
     Slider {
         id: slider
+        visible: root.spec.editor !== "integer"
         objectName: "parameterSlider_" + root.spec.key
         Layout.fillWidth: true
         from: root.spec.from; to: root.spec.to; stepSize: root.spec.step
         value: root.currentValue
-        onMoved: root.module.setParameter(root.spec.key, value)
+        onMoved: { root.validationMessage = ""; root.module.setParameter(root.spec.key, value) }
         Accessible.name: root.spec.label
         // 自定义滑轨和已选进度，位置按控件可用尺寸计算。
         background: Rectangle {

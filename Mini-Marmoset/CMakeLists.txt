@@ -14,10 +14,17 @@ find_package(Qt5 5.12 REQUIRED COMPONENTS Quick Qml Gui QuickControls2)
 
 add_subdirectory(Geometry)
 add_executable(Mini-Marmoset
+    Shader/Shader.cpp
+    Shader/Shader.h
     main.cpp
     ui/workbench.qrc
 )
-target_include_directories(Mini-Marmoset PRIVATE "${PROJECT_SOURCE_DIR}")
+if(WIN32)
+    enable_language(RC)
+    target_sources(Mini-Marmoset PRIVATE assets/icons/app.rc)
+    target_include_directories(Mini-Marmoset PRIVATE "${PROJECT_SOURCE_DIR}/assets/icons")
+endif()
+target_include_directories(Mini-Marmoset PRIVATE "${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/External/include")
 target_link_libraries(Mini-Marmoset PRIVATE
     Qt5::Quick Qt5::Qml Qt5::Gui Qt5::QuickControls2 MarmosetGeometry)
 if(MSVC)
