@@ -113,7 +113,7 @@ void main()
     vec3 baseColor = materialAlbedo();  //材质的基础颜色
 
     for (int i = 0; i < 4; ++i) {
-        //---------------------------- 直接光照 = 漫反射（折射） + 高光反射 (反射) -----------------------------
+        //---------------------------- 直接光照 = 漫反射 + 高光反射  -----------------------------
         //1.一束光从远处照过来，有距离衰减，有入射角度带来的衰减
         vec3 lightVec = lightPositions[i] - WorldPos;
         float distanceToLight = length(lightVec);
@@ -137,9 +137,12 @@ void main()
         float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;  // 防止除零
         vec3 specular = numerator / denominator;
 
-        //漫反射（能量守恒：入射能量 = 反射能量 + 折射能量）-----折射
-        vec3 kS = fresnel;                              // 镜面反射比例（反射）
-        vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);  // 漫反射比例（折射）
+        //漫反射（能量守恒：入射能量 = 反射能量 + 折射能量）
+        //光先分两路：一路界面反射（kS → specular），一路进入介质（1-kS，物理上叫折射，但只是中间步骤）；
+        //进入介质的光，非金属会散射后再从同侧出射（kD → diffuse），金属则被吸收（kD = 0）。
+        //kD 是“漫反射出射”的能量，不是“界面反射”，也不是“从另一侧穿出的透射”。
+        vec3 kS = fresnel;                              // 镜面反射比例
+        vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);  // 漫反射比例
 
         vec3 diffuse = kD * baseColor / PI;
 
@@ -147,7 +150,7 @@ void main()
         directLightingColor += (specular + diffuse)* radiance * nDotL;
     }
 
-    //---------------------------- 间接光照 = 漫反射（折射） + 高光反射 (反射) -----------------------------
+    //---------------------------- 间接光照 = 漫反射 + 高光反射 -----------------------------
     // 环境光项：本章暂未引入IBL（基于图像的光照）
     // 用很小的环境项避免未受光区域完全变黑
     indirectLightingColor = vec3(0.035) * baseColor * ao;
