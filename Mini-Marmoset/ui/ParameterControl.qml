@@ -76,25 +76,43 @@ ColumnLayout {
         visible: root.spec.editor !== "integer"
         objectName: "parameterSlider_" + root.spec.key
         Layout.fillWidth: true
+        Layout.preferredHeight: 40
+        implicitHeight: 40
+        hoverEnabled: true
+        leftPadding: 0
+        rightPadding: 0
+        topPadding: 0
+        bottomPadding: 0
         from: root.spec.from; to: root.spec.to; stepSize: root.spec.step
         value: root.currentValue
         onMoved: { root.validationMessage = ""; root.module.setParameter(root.spec.key, value) }
         Accessible.name: root.spec.label
         // 自定义滑轨和已选进度，位置按控件可用尺寸计算。
         background: Rectangle {
-            x: slider.leftPadding
+            x: slider.leftPadding + slider.handle.width / 2
             y: slider.topPadding + slider.availableHeight / 2 - height / 2
-            width: slider.availableWidth; height: 3; radius: 1
+            width: slider.availableWidth - slider.handle.width; height: 4; radius: 2
             color: Theme.border
             Rectangle { width: slider.visualPosition * parent.width; height: parent.height; color: Theme.accent; radius: 1 }
         }
         // 滑块把手响应按下和键盘焦点；visualPosition 支持控件方向。
-        handle: Rectangle {
+        handle: Item {
             x: slider.leftPadding + slider.visualPosition * (slider.availableWidth - width)
             y: slider.topPadding + slider.availableHeight / 2 - height / 2
-            width: 12; height: 12; radius: 6
-            color: slider.pressed ? Theme.text : Theme.accent
-            border.width: slider.activeFocus ? 2 : 0; border.color: Theme.text
+            implicitWidth: 28; implicitHeight: 28
+            Rectangle {
+                anchors.fill: parent
+                radius: width / 2
+                color: Theme.selected
+                visible: slider.hovered || slider.pressed || slider.activeFocus
+            }
+            Rectangle {
+                anchors.centerIn: parent
+                width: 18; height: 18; radius: 9
+                color: slider.pressed ? Theme.text : Theme.accent
+                border.width: slider.activeFocus ? 2 : 0
+                border.color: Theme.text
+            }
         }
     }
 }

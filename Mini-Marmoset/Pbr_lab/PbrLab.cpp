@@ -91,12 +91,12 @@ public:
         const float yaw = glm::radians(m_orbit.x());
         const float pitch = glm::radians(m_orbit.y());
         const float distance = m_orbit.z();
-        m_camera.Position = glm::vec3(
+        m_cameraPosition = glm::vec3(
             distance * std::cos(pitch) * std::cos(yaw),
             distance * std::sin(pitch),
             distance * std::cos(pitch) * std::sin(yaw));
-        m_view = glm::lookAt(m_camera.Position,glm::vec3(0.0f),glm::vec3(0.0f, 1.0f, 0.0f));
-        m_projection = glm::perspective(glm::radians(m_camera.Zoom),static_cast<float>(size.width()) / size.height(),0.1f,100.0f);
+        m_view = glm::lookAt(m_cameraPosition,glm::vec3(0.0f),glm::vec3(0.0f, 1.0f, 0.0f));
+        m_projection = glm::perspective(glm::radians(60.0f),static_cast<float>(size.width()) / size.height(),0.1f,100.0f);
 
         // 使用材质着色器
         m_sphereShader->use();
@@ -104,17 +104,22 @@ public:
         m_sphereShader->setMat4("projection",m_projection);
 
         // 材质参数
+        const float metallic = parameterValue("metallic", sphereData.material.metallic);
+        const float roughness = parameterValue("roughness", sphereData.material.roughness);
+        const float exposure = parameterValue("exposure", 1.0f);
+
         m_sphereShader->setVec3("albedo",sphereData.material.albedo);
-        m_sphereShader->setFloat("metallic",sphereData.material.metallic);
-        m_sphereShader->setFloat("roughness",sphereData.material.roughness);
+        m_sphereShader->setFloat("metallic",metallic);
+        m_sphereShader->setFloat("roughness",roughness);
         m_sphereShader->setFloat("ao",sphereData.material.ao);
+        m_sphereShader->setFloat("exposure",exposure);
 
         // 光源参数
         m_sphereShader->setVec3("lightPos",m_lightPosition);
         m_sphereShader->setVec3("lightColor",m_lightColor);
 
         // 相机位置
-        m_sphereShader->setVec3("cameraPos",m_camera.Position);
+        m_sphereShader->setVec3("cameraPos",m_cameraPosition);
 
         gl->glBindVertexArray(m_sphereVao);
         for(int i=0;i<5;i++)
@@ -152,10 +157,16 @@ public:
     }
 
 private:
+    // 从界面参数读取数值，参数缺失时回退到网格默认材质。
+    float parameterValue(const char *key, float fallback) const
+    {
+        const QVariant value = m_parameters.value(QLatin1String(key));
+        return value.isValid() ? value.toFloat() : fallback;
+    }
+
     void initializeResources(QOpenGLExtraFunctions* gl)
     {
         // 相机
-        m_camera = Camera(glm::vec3(0.0f,0.0f,11.0f));
 
         // 球体顶点数据
         // 生成顶点数组对象、顶点缓冲和索引缓冲
@@ -230,12 +241,11 @@ private:
     glm::vec3 m_lightColor;
 
     // 渲染矩阵
-    glm::mat4 m_model;
     glm::mat4 m_view;
     glm::mat4 m_projection;
 
     // 相机
-    Camera m_camera;
+    glm::vec3 m_cameraPosition{0.0f, 0.0f, 11.0f};
     QVector3D m_orbit{90.0f, 2.0f, 11.0f};
 
     QVariantMap m_parameters;
@@ -255,10 +265,6 @@ PbrLab::PbrLab(QQuickItem *parent)
 
     //static MeshData sphere(float radius = 1.0f, std::uint32_t segments = 64,std::uint32_t rings = 32, const Material &mat = {})
     sphereData = marmoset::MeshGenerator::sphere(0.8f);
-
-    m_pressed = false;
-    m_rotating = false;
-    m_orbit = QVector3D(90.0f,2.0f,11.0f);
 }
 
 QQuickFramebufferObject::Renderer *PbrLab::createRenderer() const
@@ -290,21 +296,6 @@ marmoset::MeshData PbrLab::getSphereData() const
     return sphereData;
 }
 
-glm::mat4 PbrLab::model() const
-{
-    return m_model;
-}
-
-glm::mat4 PbrLab::view() const
-{
-    return m_view;
-}
-
-glm::mat4 PbrLab::projection() const
-{
-    return m_projection;
-}
-
 void PbrLab::keyPressEvent(QKeyEvent *event)
 {
 
@@ -320,21 +311,10 @@ void PbrLab::mouseMoveEvent(QMouseEvent *event)
     float currentX = static_cast<float>(event->localPos().x());
     float currentY = static_cast<float>(event->localPos().y());
 
-    if(m_pressed)
-    {
-        m_lastPos.setX(currentX);
-        m_lastPos.setY(currentY);
-        m_pressed = false;
-    }
-
-    float orbitYaw = m_orbit.x();
-    float orbitPitch = m_orbit.y();
-
-    orbitYaw += (currentX - m_lastPos.x()) * 0.2f;
-    orbitPitch += (currentY - m_lastPos.y() ) * 0.2f;
-    orbitPitch = glm::clamp(orbitPitch,-65.0f,65.0f);
-    m_orbit.setX(orbitYaw);
-    m_orbit.setY(orbitPitch);
+    const float deltaX = currentX - m_lastPos.x();
+    const float deltaY = currentY - m_lastPos.y();
+    m_orbit.setX(m_orbit.x() + deltaX * 0.2f);
+    m_orbit.setY(glm::clamp(m_orbit.y() + deltaY * 0.2f, -89.0f, 89.0f));
 
     m_lastPos.setX(currentX);
     m_lastPos.setY(currentY);
@@ -349,7 +329,6 @@ void PbrLab::mousePressEvent(QMouseEvent *event)
         return;
     }
     m_rotating = true;
-    m_pressed = false;
     m_lastPos = QVector2D(event->localPos());
     event->accept();
 }
@@ -361,14 +340,12 @@ void PbrLab::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
     m_rotating = false;
-    m_pressed = false;
     event->accept();
 }
 
 void PbrLab::mouseUngrabEvent()
 {
     m_rotating = false;
-    m_pressed = false;
     QQuickFramebufferObject::mouseUngrabEvent();
 }
 
@@ -377,7 +354,7 @@ void PbrLab::wheelEvent(QWheelEvent *event)
     float factor = event->angleDelta().y() / 120.0f;
     float orbitDistance = m_orbit.z();
     orbitDistance -= factor * 0.5f;
-    orbitDistance = glm::clamp(orbitDistance, 7.0f, 17.0f);
+    orbitDistance = glm::clamp(orbitDistance, 2.0f, 20.0f);
     m_orbit.setZ(orbitDistance);
     event->accept();
 
@@ -386,8 +363,6 @@ void PbrLab::wheelEvent(QWheelEvent *event)
 
 void PbrLab::geometryChanged(const QRectF &newGeometry, const QRectF &oldGeometry)
 {
-    m_lastPos = QVector2D(width() / 2.0f, height() / 2.0f);
-
     QQuickFramebufferObject::geometryChanged(newGeometry,oldGeometry);
     update();
 }

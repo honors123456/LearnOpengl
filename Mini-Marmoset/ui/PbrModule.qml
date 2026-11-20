@@ -7,7 +7,7 @@ LabModule {
     id: moduleRoot
     // 当前模块独立创建 OpenGL 视口；参数和实验选择同步给 C++ 渲染器。
     viewportComponent: Component {
-        PbrLab {
+        PbrLab {    // 实例化时创建 C++ PbrLab 对象
             parameters: moduleRoot.parameters
             experimentIndex: moduleRoot.experimentIndex
         }

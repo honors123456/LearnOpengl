@@ -14,6 +14,7 @@ uniform vec3 albedo;    //基础颜色
 uniform float metallic; //金属度[0,1]
 uniform float roughness; //粗糙度
 uniform float ao;   //环境光遮蔽
+uniform float exposure;   // 曝光倍数
 
 const float PI = 3.14159265359;
 
@@ -102,6 +103,9 @@ void main()
     vec3 color = directLightingColor + indirectLightingColor;
 
     //Gamma校正
+    // 曝光缩放，默认 1.0 时保持原画面
+    color *= exposure;
+
     color = pow(color,vec3(1.0 / 2.2));
 
     FragColor = vec4(color,1.0);

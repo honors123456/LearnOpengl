@@ -44,7 +44,6 @@ win32-msvc {
 }
 
 RESOURCES += $$quote($$PWD/ui/workbench.qrc)
-include($$PWD/Camera/Camera.pri)
 include($$PWD/Shader/Shader.pri)
 include($$PWD/Logging/Logging.pri)
 include($$PWD/Geometry/Geometry.pri)
